@@ -56,16 +56,16 @@
             <i class="fas fa-bell"></i>
             <span class="badge">3</span>
           </div>
-          <span class="profile-name">Kartik</span>
-          <img src="https://ui-avatars.com/api/?name=Kartik&background=ff7597&color=fff" alt="Kartik" class="profile-pic">
+          <span class="profile-name" id="profileName">User</span>
+          <img src="https://ui-avatars.com/api/?name=User&background=ff7597&color=fff" alt="User" class="profile-pic" id="profilePic">
         </div>
       </header>
 
       <!-- Dashboard Content -->
       <div class="dashboard-body">
         <div class="greeting-section animate-fade-in-up" style="animation-delay: 0.1s;">
-          <h1>Good morning, Kartik</h1>
-          <p class="subtitle">Here's what needs your attention.</p>
+          <h1 id="greetingTitle">Good morning</h1>
+          <p class="subtitle" id="greetingSubtitle">Here's what needs your attention.</p>
         </div>
 
         <!-- Stats row -->
@@ -73,21 +73,21 @@
           <div class="stat-card">
             <div class="stat-icon"><i class="fas fa-envelope-open-text"></i></div>
             <div class="stat-data">
-              <span class="stat-value">128</span>
+              <span class="stat-value" id="statEmails">--</span>
               <span class="stat-label">Emails</span>
             </div>
           </div>
           <div class="stat-card">
             <div class="stat-icon important"><i class="fas fa-exclamation-circle"></i></div>
             <div class="stat-data">
-              <span class="stat-value">12</span>
+              <span class="stat-value" id="statImportant">--</span>
               <span class="stat-label">Important</span>
             </div>
           </div>
           <div class="stat-card highlight">
             <div class="stat-icon action"><i class="fas fa-bolt"></i></div>
             <div class="stat-data">
-              <span class="stat-value">5</span>
+              <span class="stat-value" id="statActions">--</span>
               <span class="stat-label">Actions</span>
             </div>
           </div>
@@ -98,33 +98,11 @@
           <div class="card-header">
             <h2>🔥 Needs Attention</h2>
           </div>
-          <ul class="attention-list">
-            <li>
+          <ul class="attention-list" id="attentionList">
+            <li class="attention-loading">
               <div class="attention-content">
-                <div class="avatar-sm">S</div>
-                <span class="sender">Sarah</span>
-                <i class="fas fa-arrow-right icon-arrow"></i>
-                <span class="subject">Project deadline</span>
+                <span class="sender">Loading...</span>
               </div>
-              <button class="btn-icon" title="View details"><i class="fas fa-chevron-right"></i></button>
-            </li>
-            <li>
-              <div class="attention-content">
-                <div class="avatar-sm avatar-alt-1">R</div>
-                <span class="sender">Rahul</span>
-                <i class="fas fa-arrow-right icon-arrow"></i>
-                <span class="subject">Meeting request</span>
-              </div>
-              <button class="btn-icon" title="View details"><i class="fas fa-chevron-right"></i></button>
-            </li>
-            <li>
-              <div class="attention-content">
-                <div class="avatar-sm avatar-alt-2">C</div>
-                <span class="sender">Client</span>
-                <i class="fas fa-arrow-right icon-arrow"></i>
-                <span class="subject">Proposal feedback</span>
-              </div>
-              <button class="btn-icon" title="View details"><i class="fas fa-chevron-right"></i></button>
             </li>
           </ul>
         </div>
@@ -138,7 +116,7 @@
             <h2><i class="fas fa-sparkles"></i> AI INSIGHT</h2>
           </div>
           <div class="card-body">
-            <p>You have <strong>7 unanswered emails</strong> from high-priority contacts.</p>
+            <p id="aiInsightText">Analyzing your inbox...</p>
             <div class="insight-actions">
               <button class="btn-primary">
                 <i class="fas fa-check-circle"></i> Review them
@@ -155,5 +133,6 @@
       </button>
     </main>
   </div>
+  <script src="./dashboard.js"></script>
 </body>
 </html>

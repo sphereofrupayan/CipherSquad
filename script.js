@@ -335,9 +335,20 @@ document.addEventListener('DOMContentLoaded', () => {
     pointer.y = -2000;
   });
 
-  // Interactive Google Auth Button Prototype
+  // ── Check for OAuth return params on page load ──
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('connected') === 'true' && urlParams.get('userId')) {
+    localStorage.setItem('userId', urlParams.get('userId'));
+    if (urlParams.get('name')) localStorage.setItem('userName', urlParams.get('name'));
+    // Redirect to dashboard
+    window.location.href = './dashboard.html';
+    return; // Stop executing the rest of the script
+  }
+
+  // ── Google Auth Button — Real OAuth Redirect ──
   const googleAuthBtn = document.getElementById('googleAuthBtn');
   const authStatusMsg = document.getElementById('authStatusMsg');
+  const API_BASE = 'http://localhost:5000';
 
   if (googleAuthBtn) {
     googleAuthBtn.addEventListener('click', () => {
@@ -345,13 +356,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       googleAuthBtn.classList.add('is-loading');
       authStatusMsg.className = 'auth-status-msg';
-      authStatusMsg.textContent = 'Connecting to Gmail & Workspace Thread Analyzer...';
+      authStatusMsg.textContent = 'Redirecting to Google...';
 
-      setTimeout(() => {
-        googleAuthBtn.classList.remove('is-loading');
-        authStatusMsg.classList.add('is-success');
-        authStatusMsg.textContent = '✓ Inbox Connected! Agent Harness initialized.';
-      }, 1400);
+      // Redirect to backend OAuth endpoint
+      window.location.href = `${API_BASE}/auth/google`;
     });
   }
 
