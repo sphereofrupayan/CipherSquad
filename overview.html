@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard • Agent Harness — CipherSquad</title>
+  <meta name="description" content="AI-powered email orchestration dashboard — CipherSquad × C2C 7.0">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="./overview.css">
+</head>
+<body>
+
+  <!-- Ambient background -->
+  <div class="bg-radial" aria-hidden="true"></div>
+
+  <div class="shell">
+
+    <!-- ════ SIDEBAR ════ -->
+    <aside class="sidebar">
+      <!-- Brand -->
+      <div class="sb-brand">
+        <div class="sb-logo-wrap">
+          <img src="./assets/images/cs_logo.png" alt="CipherSquad" onerror="this.src='./assets/images/ciphersquad_logo.jpg'">
+        </div>
+        <div class="sb-brand-text">
+          <span class="sb-title">CipherMail</span>
+          <span class="sb-sub">Agent Harness v1.0</span>
+        </div>
+      </div>
+
+      <!-- Nav -->
+      <nav class="sb-nav">
+        <a href="#" class="sb-link active" id="snl-overview">
+          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          Overview
+        </a>
+        <a href="#" class="sb-link" id="snl-inbox">
+          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z"/></svg>
+          Inbox
+          <span class="sb-count">128</span>
+        </a>
+        <a href="#" class="sb-link" id="snl-insights">
+          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          Insights
+        </a>
+        <a href="#" class="sb-link" id="snl-tasks">
+          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+          Tasks
+          <span class="sb-count urgent">5</span>
+        </a>
+        <a href="#" class="sb-link" id="snl-agent">
+          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+          Workflows
+          <span class="sb-live">Live</span>
+        </a>
+
+        <div class="sb-sep"></div>
+
+        <a href="#" class="sb-link" id="snl-integrations">
+          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
+          Integrations
+        </a>
+        <a href="#" class="sb-link" id="snl-settings">
+          <svg class="sb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+          Settings
+        </a>
+      </nav>
+    </aside>
+
+    <!-- ════ MAIN ════ -->
+    <main class="main">
+
+      <!-- Topbar -->
+      <header class="topbar">
+        <div class="topbar-search" id="topbar-search">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" placeholder="Search workflows, emails…" id="search-input">
+          <kbd>⌘K</kbd>
+        </div>
+        
+        <div class="topbar-right">
+          
+          <button class="voice-briefing-btn" id="voiceBriefingBtn" title="Generate voice briefing">
+            <i class="fa-solid fa-volume-high"></i>
+            <span>Voice Briefing</span>
+          </button>
+
+          <!-- Theme Toggle Switch -->
+          <div class="theme-toggle-wrapper">
+             <span class="theme-label">Dark</span>
+             <label class="switch">
+               <input type="checkbox" id="theme-toggle">
+               <span class="slider round"></span>
+             </label>
+          </div>
+
+          <button class="tb-icon-btn" id="tb-audit" title="View Audit Trail">
+            <i class="fa-solid fa-clock-rotate-left"></i>
+          </button>
+
+          <button class="tb-icon-btn" id="tb-bell" title="Pending Approvals">
+            <i class="fa-solid fa-bell"></i>
+            <span class="bell-badge"></span>
+          </button>
+
+          <button class="tb-run-btn" id="tb-run">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Execute
+          </button>
+
+          <div class="user-profile-menu">
+            <img src="./assets/images/cs_logo.png" alt="User Avatar" class="user-avatar" onerror="this.src='./assets/images/ciphersquad_logo.jpg'">
+            <div class="user-meta">
+              <span class="user-name">Kartikay Gupta</span>
+              <span class="user-role">Team CIPHERSQUAD</span>
+            </div>
+            <a href="#" class="logout-link">
+              <i class="fa-solid fa-arrow-right-from-bracket"></i>
+            </a>
+          </div>
+
+        </div>
+      </header>
+
+      <!-- Page content -->
+      <div class="page" id="page-content">
+
+        <!-- Greeting -->
+        <div class="greeting">
+          <div>
+            <h1 class="greeting-h1">Good morning, Kartikay</h1>
+            <p class="greeting-p">Saturday, 6 September · <strong>128 emails</strong> processed since midnight.</p>
+          </div>
+          <div class="engine-status-pill" id="agent-badge">
+            <span class="pulse-indicator"></span>
+            System Synced
+          </div>
+        </div>
+
+        <!-- KPI row -->
+        <div class="kpi-row" id="kpi-row">
+          <div class="kpi-card" id="kpi-emails">
+            <div class="kpi-top">
+              <span class="kpi-label">Processed</span>
+              <span class="kpi-icon-wrap">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+              </span>
+            </div>
+            <p class="kpi-val">128</p>
+            <p class="kpi-delta pos">↑ 14% vs yesterday</p>
+          </div>
+          <div class="kpi-card" id="kpi-flagged">
+            <div class="kpi-top">
+              <span class="kpi-label">Flagged</span>
+              <span class="kpi-icon-wrap warn">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+              </span>
+            </div>
+            <p class="kpi-val">12</p>
+            <p class="kpi-delta neu">3 added today</p>
+          </div>
+          <div class="kpi-card kpi-highlight" id="kpi-actions">
+            <div class="kpi-top">
+              <span class="kpi-label">Awaiting Action</span>
+              <span class="kpi-icon-wrap accent">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              </span>
+            </div>
+            <p class="kpi-val accent-val">5</p>
+            <p class="kpi-delta neu">Needs your review</p>
+          </div>
+          <div class="kpi-card" id="kpi-time">
+            <div class="kpi-top">
+              <span class="kpi-label">Time Saved</span>
+              <span class="kpi-icon-wrap ok">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              </span>
+            </div>
+            <p class="kpi-val">2.4h</p>
+            <p class="kpi-delta pos">↑ Today</p>
+          </div>
+        </div>
+
+        <!-- Main grid -->
+        <div class="grid" id="main-grid">
+
+          <!-- Attention panel -->
+          <section class="glass-card attention-panel" id="attention-panel">
+            <div class="card-head">
+              <div class="card-head-left">
+                <span class="accent-pip"></span>
+                <h2 class="card-title">Needs Attention</h2>
+                <span class="count-badge">3</span>
+              </div>
+              <button class="ghost-btn" id="view-all-btn">View all</button>
+            </div>
+
+            <ul class="att-list" id="att-list">
+              <li class="att-item" id="att-1">
+                <div class="att-avatar av-a">S</div>
+                <div class="att-body">
+                  <p class="att-from">Sarah Mitchell <span class="att-arrow">→</span> <span class="att-subject">Project deadline</span></p>
+                  <p class="att-desc">Phase 1 deliverables are due tomorrow at 5 PM</p>
+                </div>
+                <div class="att-meta">
+                  <span class="tag tag-red">Urgent</span>
+                  <button class="att-open-btn" id="att-open-1">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                  </button>
+                </div>
+              </li>
+              <li class="att-item" id="att-2">
+                <div class="att-avatar av-b">R</div>
+                <div class="att-body">
+                  <p class="att-from">Rahul Sharma <span class="att-arrow">→</span> <span class="att-subject">Meeting request</span></p>
+                  <p class="att-desc">Architecture sync — new harness integration module</p>
+                </div>
+                <div class="att-meta">
+                  <span class="tag tag-rose">Review</span>
+                  <button class="att-open-btn" id="att-open-2">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                  </button>
+                </div>
+              </li>
+              <li class="att-item" id="att-3">
+                <div class="att-avatar av-c">C</div>
+                <div class="att-body">
+                  <p class="att-from">Client · Nexora Inc <span class="att-arrow">→</span> <span class="att-subject">Proposal feedback</span></p>
+                  <p class="att-desc">Review updated requirements doc before Monday</p>
+                </div>
+                <div class="att-meta">
+                  <span class="tag tag-dim">Pending</span>
+                  <button class="att-open-btn" id="att-open-3">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                  </button>
+                </div>
+              </li>
+            </ul>
+          </section>
+
+          <!-- Right column -->
+          <div class="right-col">
+
+            <!-- Insight -->
+            <div class="glass-card insight-card" id="insight-card">
+              <div class="insight-top">
+                <span class="insight-badge">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M2 12h4l3-9 5 18 3-9h5"/></svg>
+                  Priority Insight
+                </span>
+                <button class="dismiss-btn" id="dismiss-insight" title="Dismiss">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+              <p class="insight-body"><strong>7 unanswered emails</strong> from priority contacts in the last 6 hours. System can draft contextual replies for your approval.</p>
+              <div class="insight-actions">
+                <button class="btn-accent" id="btn-draft">Review Drafts</button>
+                <button class="btn-ghost" id="btn-skip">Skip for now</button>
+              </div>
+            </div>
+
+            <!-- Log -->
+            <div class="glass-card log-card" id="log-card">
+              <div class="card-head">
+                <div class="card-head-left">
+                  <span class="accent-pip teal"></span>
+                  <h2 class="card-title">Activity Log</h2>
+                </div>
+                <span class="live-chip">
+                  <span class="live-dot"></span>
+                  Live
+                </span>
+              </div>
+              <ol class="log-list" id="log-list">
+                <li class="log-item">
+                  <span class="log-ts">09:31</span>
+                  <span class="log-msg">Classified 32 emails as low-priority</span>
+                  <span class="log-status ok">✓</span>
+                </li>
+                <li class="log-item">
+                  <span class="log-ts">09:22</span>
+                  <span class="log-msg">Flagged 3 emails needing human action</span>
+                  <span class="log-status warn">!</span>
+                </li>
+                <li class="log-item">
+                  <span class="log-ts">09:11</span>
+                  <span class="log-msg">Drafted 2 meeting summaries</span>
+                  <span class="log-status ok">✓</span>
+                </li>
+                <li class="log-item">
+                  <span class="log-ts">08:55</span>
+                  <span class="log-msg">Synced with Google Workspace</span>
+                  <span class="log-status ok">✓</span>
+                </li>
+              </ol>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // Theme Toggle Logic
+    const toggleSwitch = document.getElementById('theme-toggle');
+    const htmlEl = document.documentElement;
+    
+    // Check for saved theme (default is light/bw now)
+    if (localStorage.getItem('dark-theme') === 'true') {
+      htmlEl.classList.add('dark-theme');
+      toggleSwitch.checked = true;
+    }
+
+    toggleSwitch.addEventListener('change', function() {
+      if (this.checked) {
+        htmlEl.classList.add('dark-theme');
+        localStorage.setItem('dark-theme', 'true');
+      } else {
+        htmlEl.classList.remove('dark-theme');
+        localStorage.setItem('dark-theme', 'false');
+      }
+    });
+  </script>
+</body>
+</html>
