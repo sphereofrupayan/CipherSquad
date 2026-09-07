@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CipherSquad • Code2Create 7.0</title>
+  <link rel="icon" type="image/png" href="./assets/images/cs_logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="./script.js" defer></script>
+</head>
+<body>
+  <h1 class="sr-only">CipherSquad - Code2Create 7.0 Portal</h1>
+
+  <!-- Portable Fallback Background Image (Works if video is missing or unsupported) -->
+  <div class="video-fallback-bg" id="videoFallbackBg" aria-hidden="true"></div>
+
+  <!-- Background Video with Multi-Source Fallback (assets/videos/ and root ./) -->
+  <video id="bgVideo" class="bg-video" autoplay muted loop playsinline preload="auto" poster="./assets/images/video_preview.jpg">
+    <source src="./assets/videos/c2c_background.mp4" type="video/mp4">
+    <source src="./c2c_background.mp4" type="video/mp4">
+  </video>
+  <div class="video-overlay" id="videoOverlay" aria-hidden="true"></div>
+
+  <!-- Ambient floating sakura sparks -->
+  <div id="particles" aria-hidden="true"></div>
+
+  <!-- Top-Left Collaboration Badge: Our Logo ✕ Their Logo (No Text) -->
+  <header class="top-collab-badge" id="topCollabBadge">
+    <div class="mini-lockup" title="CipherSquad ✕ Code2Create 7.0">
+      <img src="./assets/images/cs_logo.png" alt="CipherSquad Logo" class="badge-logo cs-badge">
+      <span class="badge-x" aria-hidden="true">✕</span>
+      <img src="./assets/images/logo.svg" alt="Code2Create Logo" class="badge-logo c2c-badge">
+    </div>
+  </header>
+
+  <!-- Fullscreen Interactive Canvas for Tubelight Glitching Dot Logo -->
+  <canvas class="dot-logo" id="dotLogo" aria-hidden="true"></canvas>
+
+  <!-- Subtle Scroll Indicator -->
+  <div class="scroll-prompt" id="scrollPrompt">
+    <span class="prompt-text">Scroll to Authenticate</span>
+    <div class="mouse-icon" aria-hidden="true">
+      <div class="mouse-wheel"></div>
+    </div>
+  </div>
+
+  <!-- Google Auth Login Section (Revealed on Scroll with Glassmorphism) -->
+  <section class="auth-container" id="authContainer" aria-label="Participant Authentication">
+    <div class="auth-card" id="authCard">
+      <!-- Card Glow Accent -->
+      <div class="card-glow" aria-hidden="true"></div>
+
+      <!-- Mini Dual Branding -->
+      <div class="auth-brand">
+        <img src="./assets/images/cs_logo.png" alt="CipherSquad" class="auth-mini-logo cs-mini">
+        <span class="auth-mini-x" aria-hidden="true">✕</span>
+        <img src="./assets/images/logo.svg" alt="Code2Create 7.0" class="auth-mini-logo c2c-mini">
+      </div>
+
+      <!-- Header Content -->
+      <div class="auth-header">
+        <div class="auth-badge">AGENT HARNESS • EMAIL CLIENT</div>
+        <h2 class="auth-title">Access Intelligent Inbox</h2>
+        <p class="auth-subtitle">Connect your Google Workspace to transform unstructured email threads into <strong>dependency-aware, executable workflows</strong>.</p>
+      </div>
+
+      <!-- Google Sign In Button -->
+      <div class="auth-actions">
+        <button class="google-auth-btn" id="googleAuthBtn" type="button">
+          <svg class="google-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"/>
+            <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.34 24 12 24z"/>
+            <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
+            <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.34 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+          </svg>
+          <span class="btn-text" id="btnText">Connect with Google</span>
+          <div class="btn-spinner" id="btnSpinner" aria-hidden="true"></div>
+        </button>
+
+        <div class="auth-status-msg" id="authStatusMsg" aria-live="polite"></div>
+
+        <div class="auth-divider">
+          <span>OR</span>
+        </div>
+
+        <a href="./dashboard.html" class="demo-client-btn" id="demoClientBtn">
+          <span>Explore Interactive Client</span>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <main class="mail-app" id="mailApp" aria-label="CipherSquad Email Client">
+    <aside class="mail-sidebar">
+      <div class="profile-panel">
+        <img class="profile-photo" id="profilePhoto" src="./assets/images/cs_logo.png" alt="Signed-in profile">
+        <div>
+          <p class="profile-kicker">Signed in as</p>
+          <h2 id="profileName">Google User</h2>
+          <p id="profileEmail">Connected Workspace</p>
+        </div>
+      </div>
+
+      <nav class="mail-nav" aria-label="Mailbox folders">
+        <button class="mail-nav-item is-active" type="button">Inbox <span id="inboxCount">0</span></button>
+        <button class="mail-nav-item" type="button">Flagged <span>3</span></button>
+        <button class="mail-nav-item" type="button">Actions <span id="actionCount">4</span></button>
+      </nav>
+
+      <button class="sign-out-btn" id="signOutBtn" type="button">Disconnect Google</button>
+    </aside>
+
+    <section class="inbox-panel" aria-label="Inbox messages">
+      <div class="panel-header">
+        <div>
+          <p class="section-kicker">Live Gmail</p>
+          <h2>Inbox</h2>
+        </div>
+        <button class="refresh-btn" id="refreshInboxBtn" type="button">Refresh</button>
+      </div>
+      <div class="message-list" id="messageList"></div>
+    </section>
+
+    <section class="thread-panel" aria-label="Selected email thread">
+      <div class="panel-header">
+        <div>
+          <p class="section-kicker">Selected Thread</p>
+          <h2 id="threadTitle">Client Portal v2</h2>
+        </div>
+        <span class="risk-pill" id="riskPill">High Risk</span>
+      </div>
+      <article class="thread-content" id="threadContent"></article>
+    </section>
+
+    <aside class="agent-panel" aria-label="Agent insights">
+      <div class="panel-header">
+        <div>
+          <p class="section-kicker">Agent Harness</p>
+          <h2>Insights</h2>
+        </div>
+        <span class="live-dot">Live</span>
+      </div>
+
+      <div class="insight-grid">
+        <div class="metric-card"><strong>3</strong><span>Tasks</span></div>
+        <div class="metric-card"><strong>2</strong><span>Dependencies</span></div>
+        <div class="metric-card danger"><strong>1</strong><span>Blocker</span></div>
+        <div class="metric-card warn"><strong>1</strong><span>Deadline Risk</span></div>
+      </div>
+
+      <div class="dependency-graph" id="dependencyGraph">
+        <div class="graph-node danger">Schema Approval<br><span>Sreyanko</span></div>
+        <div class="graph-edge"></div>
+        <div class="graph-node warn">Backend Deployment<br><span>Kartikay</span></div>
+        <div class="graph-edge"></div>
+        <div class="graph-node warn">Frontend Integration<br><span>Priyam</span></div>
+        <div class="graph-edge"></div>
+        <div class="graph-node">Client Demo<br><span>Wednesday</span></div>
+      </div>
+
+      <div class="actions-panel">
+        <h3>Proposed Actions</h3>
+        <label><input type="checkbox" checked> Remind Sreyanko</label>
+        <label><input type="checkbox" checked> Create approval task</label>
+        <label><input type="checkbox" checked> Notify Kartikay</label>
+        <label><input type="checkbox" checked> Draft response</label>
+        <button class="approve-btn" id="approveActionsBtn" type="button">Approve & Execute</button>
+        <p class="approval-status" id="approvalStatus">Awaiting human approval</p>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Scroll spacer that enables scroll/swipe gestures -->
+  <div class="scroll-spacer" aria-hidden="true"></div>
+</body>
+</html>

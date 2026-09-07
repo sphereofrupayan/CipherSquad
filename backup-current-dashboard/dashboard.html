@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CipherMail • Agent Harness Email Client</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/png" href="./assets/images/cs_logo.png">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="./dashboard.css">
+  <script src="./dashboard.js" defer></script>
+</head>
+<body>
+  <!-- Ambient background glow effects -->
+  <div class="ambient-glow top-left" aria-hidden="true"></div>
+  <div class="ambient-glow bottom-right" aria-hidden="true"></div>
+
+  <div class="app-shell">
+    <!-- Global Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="brand-badge">
+          <img src="./assets/images/cs_logo.png" alt="CipherSquad" class="brand-avatar" onerror="this.src='./assets/images/ciphersquad_logo.jpg'">
+          <div class="brand-text-col">
+            <span class="brand-title">CipherMail</span>
+            <span class="brand-sub">Agent Harness v1.0</span>
+          </div>
+        </div>
+        <div class="hackathon-tag">
+          <img src="./assets/images/logo.svg" alt="C2C" class="c2c-mini-icon" onerror="this.style.display='none'">
+          <span>C2C 7.0</span>
+        </div>
+      </div>
+
+      <div class="header-center">
+        <div class="universal-search">
+          <i class="fa-solid fa-magnifying-glass search-icon"></i>
+          <input type="text" id="searchInput" placeholder="Search threads, detected dependencies, blockers, people...">
+          <span class="search-kbd">⌘K</span>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <!-- Live Agent Engine Status -->
+        <div class="engine-status-pill" id="engineStatusPill" title="Agent Harness Reasoner is active">
+          <span class="pulse-indicator"></span>
+          <span class="status-label">Agent Harness: <strong>Active</strong></span>
+        </div>
+
+        <button class="icon-btn" id="auditToggleBtn" title="View Audit Trail">
+          <i class="fa-solid fa-clock-rotate-left"></i>
+          <span class="badge-count" id="auditBadge">5</span>
+        </button>
+
+        <button class="icon-btn" id="pendingApprovalsBtn" title="Pending Approvals">
+          <i class="fa-solid fa-bell"></i>
+          <span class="badge-count alert" id="pendingBadgeCount">4</span>
+        </button>
+
+        <button class="voice-briefing-btn" id="voiceBriefingBtn" title="Generate ElevenLabs voice briefing">
+          <i class="fa-solid fa-volume-high"></i>
+          <span>Voice Briefing</span>
+        </button>
+
+        <!-- Quick Theme Toggle (White / Black) -->
+        <button class="icon-btn" id="quickThemeBtn" title="Toggle White / Black Theme">
+          <i class="fa-solid fa-moon" id="themeIcon"></i>
+        </button>
+
+        <!-- Settings & Preferences Button -->
+        <button class="icon-btn" id="settingsToggleBtn" title="Appearance & Automation Settings">
+          <i class="fa-solid fa-gear"></i>
+        </button>
+
+        <div class="user-profile-menu" id="userProfileMenu">
+          <img src="./assets/images/cs_logo.png" alt="User Avatar" class="user-avatar" onerror="this.src='./assets/images/ciphersquad_logo.jpg'">
+          <div class="user-meta">
+            <span class="user-name">Priyam Trivedi</span>
+            <span class="user-role">Team CIPHERSQUAD</span>
+          </div>
+          <a href="./index.html" class="logout-link" id="logoutLink" title="Sign out / Return to landing">
+            <i class="fa-solid fa-arrow-right-from-bracket"></i>
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <!-- 3-Pane Email Client Shell -->
+    <div class="client-workspace">
+      <!-- Pane 1: Sidebar Folders & Navigation -->
+      <aside class="client-sidebar">
+        <div class="compose-wrapper">
+          <button class="compose-btn" id="composeBtn">
+            <i class="fa-solid fa-pen-nib"></i>
+            <span>New Thread</span>
+          </button>
+        </div>
+
+        <nav class="sidebar-menu">
+          <div class="nav-section-title">MAILBOX</div>
+          <ul class="nav-list">
+            <li class="nav-item active" data-filter="all">
+              <a href="#inbox">
+                <i class="fa-solid fa-inbox"></i>
+                <span>Inbox</span>
+                <span class="count-pill">12</span>
+              </a>
+            </li>
+            <li class="nav-item highlight-item" data-filter="needs-action">
+              <a href="#pending-actions">
+                <i class="fa-solid fa-bolt-lightning"></i>
+                <span>Pending Approvals</span>
+                <span class="count-pill alert" id="sidebarActionCount">4</span>
+              </a>
+            </li>
+            <li class="nav-item alert-item" data-filter="blockers">
+              <a href="#blockers">
+                <i class="fa-solid fa-triangle-exclamation"></i>
+                <span>Active Blockers</span>
+                <span class="count-pill blocker">1</span>
+              </a>
+            </li>
+            <li class="nav-item" data-filter="starred">
+              <a href="#starred">
+                <i class="fa-regular fa-star"></i>
+                <span>Starred</span>
+              </a>
+            </li>
+            <li class="nav-item" data-filter="sent">
+              <a href="#sent">
+                <i class="fa-solid fa-paper-plane"></i>
+                <span>Sent</span>
+              </a>
+            </li>
+          </ul>
+
+          <div class="nav-section-title">AGENT VIEWS</div>
+          <ul class="nav-list">
+            <li class="nav-item" id="navGraphView">
+              <a href="#graph">
+                <i class="fa-solid fa-diagram-project"></i>
+                <span>Dependency Graph</span>
+              </a>
+            </li>
+            <li class="nav-item" id="navAuditView">
+              <a href="#audit">
+                <i class="fa-solid fa-list-check"></i>
+                <span>Audit & Execution Log</span>
+              </a>
+            </li>
+          </ul>
+
+          <div class="nav-section-title">PREFERENCES</div>
+          <ul class="nav-list">
+            <li class="nav-item" id="sidebarSettingsBtn">
+              <a href="#settings">
+                <i class="fa-solid fa-sliders"></i>
+                <span>Settings & Theme</span>
+              </a>
+            </li>
+          </ul>
+
+          <div class="nav-section-title">PROJECT TEAM</div>
+          <ul class="team-list">
+            <li class="team-member" data-member="Kartikay">
+              <span class="member-dot online"></span>
+              <span class="member-name">Kartikay Gupta</span>
+              <span class="member-tag">Backend</span>
+            </li>
+            <li class="team-member" data-member="Sreyanko">
+              <span class="member-dot waiting"></span>
+              <span class="member-name">Sreyanko Sinha</span>
+              <span class="member-tag pending">Blocking DB</span>
+            </li>
+            <li class="team-member" data-member="Priyam">
+              <span class="member-dot online"></span>
+              <span class="member-name">Priyam Trivedi</span>
+              <span class="member-tag">Frontend</span>
+            </li>
+            <li class="team-member" data-member="Rupayan">
+              <span class="member-dot online"></span>
+              <span class="member-name">Rupayan Chattaraj</span>
+              <span class="member-tag">AI Harness</span>
+            </li>
+            <li class="team-member" data-member="Asmin">
+              <span class="member-dot online"></span>
+              <span class="member-name">Asmin Sinha</span>
+              <span class="member-tag">Orchestrator</span>
+            </li>
+          </ul>
+        </nav>
+
+        <div class="sidebar-bottom-info">
+          <div class="backend-hook-pill" title="Frontend is ready to receive JSON from backend LLM harness">
+            <i class="fa-solid fa-plug-circle-check"></i>
+            <span>Harness API: <strong id="backendStatusText">Checking</strong></span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Pane 2: Email Threads List -->
+      <section class="threads-pane">
+        <div class="threads-header">
+          <div class="threads-title-row">
+            <h2>Inbox</h2>
+            <div class="filter-dropdown">
+              <select id="threadFilterSelect">
+                <option value="all">All Conversations</option>
+                <option value="actions">Action Required (4)</option>
+                <option value="blockers">Blockers Only</option>
+              </select>
+            </div>
+          </div>
+          <div class="quick-filter-pills">
+            <button class="pill-btn active" data-filter="all">All</button>
+            <button class="pill-btn alert-pill" data-filter="actions">Actions Needed (4)</button>
+            <button class="pill-btn blocker-pill" data-filter="blockers">Blockers (1)</button>
+          </div>
+        </div>
+
+        <div class="threads-list" id="threadsList">
+          <!-- Dynamically populated via dashboard.js -->
+        </div>
+      </section>
+
+      <!-- Pane 3: Split View - Email Reading Pane + Agent Harness Intelligence Panel -->
+      <main class="thread-detail-pane" id="threadDetailPane">
+        <!-- Content dynamically injected for selected thread -->
+      </main>
+    </div>
+  </div>
+
+  <!-- Fullscreen Dependency Graph Modal -->
+  <div class="modal-backdrop" id="graphModal" aria-hidden="true">
+    <div class="modal-card graph-modal-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <i class="fa-solid fa-diagram-project modal-icon"></i>
+          <div>
+            <h3>Project Dependency Graph</h3>
+            <p>Live cross-thread blocker detection & critical path analysis</p>
+          </div>
+        </div>
+        <button class="close-modal-btn" id="closeGraphModalBtn"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body graph-modal-body" id="graphModalBody">
+        <!-- Interactive visual dependency tree rendered here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings & Theme Modal -->
+  <div class="modal-backdrop" id="settingsModal" aria-hidden="true">
+    <div class="modal-card settings-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <i class="fa-solid fa-sliders modal-icon"></i>
+          <div>
+            <h3>Settings & Preferences</h3>
+            <p>Appearance theme and Agent Harness safeguards</p>
+          </div>
+        </div>
+        <button class="close-modal-btn" id="closeSettingsModalBtn" type="button" aria-label="Close Settings">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div class="modal-body settings-body">
+        <!-- Appearance Section -->
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="settings-badge">APPEARANCE</span>
+            <h4>Color Scheme</h4>
+            <p>Select your interface theme. Defaults to crisp Porcelain White, with convertable Obsidian Black.</p>
+          </div>
+
+          <div class="theme-selector-grid">
+            <!-- White Theme Card (Default) -->
+            <div class="theme-card active" id="themeCardLight" data-theme-choice="light">
+              <div class="theme-preview-box light-preview">
+                <div class="preview-bar"></div>
+                <div class="preview-layout">
+                  <div class="preview-side"></div>
+                  <div class="preview-content">
+                    <div class="preview-line main"></div>
+                    <div class="preview-line sub"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="theme-card-info">
+                <div class="theme-card-title">
+                  <i class="fa-solid fa-sun"></i>
+                  <strong>Porcelain White</strong>
+                  <span class="default-pill">Default</span>
+                </div>
+                <p>Clean, high-contrast light mode designed for fast workflow reading with crisp obsidian accents.</p>
+              </div>
+              <div class="theme-radio-indicator">
+                <i class="fa-solid fa-check"></i>
+              </div>
+            </div>
+
+            <!-- Black Theme Card -->
+            <div class="theme-card" id="themeCardDark" data-theme-choice="dark">
+              <div class="theme-preview-box dark-preview">
+                <div class="preview-bar"></div>
+                <div class="preview-layout">
+                  <div class="preview-side"></div>
+                  <div class="preview-content">
+                    <div class="preview-line main"></div>
+                    <div class="preview-line sub"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="theme-card-info">
+                <div class="theme-card-title">
+                  <i class="fa-solid fa-moon"></i>
+                  <strong>Obsidian Black</strong>
+                </div>
+                <p>Deep dark acrylic glassmorphism with metallic chrome silver glow and dark surfaces.</p>
+              </div>
+              <div class="theme-radio-indicator">
+                <i class="fa-solid fa-check"></i>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Automation Safeguards Section -->
+        <div class="settings-section">
+          <div class="settings-section-header">
+            <span class="settings-badge">AGENT HARNESS</span>
+            <h4>Automation Safeguards</h4>
+            <p>Maintain complete human oversight over proposed actions.</p>
+          </div>
+
+          <div class="settings-toggle-group">
+            <label class="settings-toggle-row">
+              <div class="toggle-text">
+                <strong>Human-in-the-Loop Signoff</strong>
+                <span>Never auto-execute emails, tickets, or reminders without manual approval</span>
+              </div>
+              <input type="checkbox" id="settingHumanApproval" checked class="custom-switch">
+            </label>
+
+            <label class="settings-toggle-row">
+              <div class="toggle-text">
+                <strong>Critical Blocker Highlighting</strong>
+                <span>Flag threads where dependency delays threaten project demo milestones</span>
+              </div>
+              <input type="checkbox" id="settingBlockerAlerts" checked class="custom-switch">
+            </label>
+
+            <label class="settings-toggle-row">
+              <div class="toggle-text">
+                <strong>Pre-draft Reply Interventions</strong>
+                <span>Synthesize context-aware email replies for instant review and insertion</span>
+              </div>
+              <input type="checkbox" id="settingPredraftReplies" checked class="custom-switch">
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-text-action" id="resetThemeWhiteBtn" type="button">Reset to White (Default)</button>
+        <button class="btn-save-settings" id="saveSettingsBtn" type="button">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Compose New Thread Modal -->
+  <div class="modal-backdrop" id="composeModal" aria-hidden="true">
+    <div class="modal-card" style="width: min(94vw, 640px);">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <i class="fa-solid fa-pen-nib modal-icon"></i>
+          <div>
+            <h3>Compose New Email Thread</h3>
+            <p>Write an email — the Agent Harness will parse tasks & blockers in real-time</p>
+          </div>
+        </div>
+        <button class="close-modal-btn" id="closeComposeModalBtn" type="button" aria-label="Close Compose"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div style="margin-bottom: 12px; display: flex; justify-content: flex-end;">
+          <button type="button" class="btn-text-action" id="prefillBlockerThreadBtn" style="font-size: 0.76rem; color: var(--text-heading);"><i class="fa-solid fa-wand-magic-sparkles"></i> Auto-fill Sample Blocker Scenario</button>
+        </div>
+        <form id="composeForm" onsubmit="return false;">
+          <div style="display: flex; flex-direction: column; gap: 14px;">
+            <div>
+              <label style="display: block; font-size: 0.74rem; font-weight: 700; color: var(--text-dim); text-transform: uppercase; margin-bottom: 6px;">Recipients (To)</label>
+              <input type="text" id="composeTo" class="form-input" placeholder="e.g. Sreyanko Sinha, Kartikay Gupta" style="width: 100%; height: 38px; padding: 0 14px; background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-main); font-family: inherit; font-size: 0.85rem; outline: none;" value="Sreyanko Sinha <sreyanko@ciphersquad.tech>">
+            </div>
+            <div>
+              <label style="display: block; font-size: 0.74rem; font-weight: 700; color: var(--text-dim); text-transform: uppercase; margin-bottom: 6px;">Subject</label>
+              <input type="text" id="composeSubject" class="form-input" placeholder="Thread Subject..." style="width: 100%; height: 38px; padding: 0 14px; background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-main); font-family: inherit; font-size: 0.85rem; outline: none;" value="Staging Deployment API Sync">
+            </div>
+            <div>
+              <label style="display: block; font-size: 0.74rem; font-weight: 700; color: var(--text-dim); text-transform: uppercase; margin-bottom: 6px;">Email Body</label>
+              <textarea id="composeBody" rows="5" class="form-textarea" placeholder="Type your email content here..." style="width: 100%; padding: 12px 14px; background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-main); font-family: inherit; font-size: 0.85rem; outline: none; resize: vertical;">Hi Sreyanko, Kartikay has finished the backend API endpoints. We cannot push to staging until you review and approve the schema migrations. Let us know as soon as this is done.</textarea>
+            </div>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-text-action" id="cancelComposeBtn" type="button">Discard</button>
+        <button class="btn-save-settings" id="sendComposeBtn" type="button"><i class="fa-solid fa-paper-plane"></i> Send & Run Agent Harness</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Audit Trail & Reasoning Log Modal -->
+  <div class="modal-backdrop" id="auditModal" aria-hidden="true">
+    <div class="modal-card" style="width: min(94vw, 760px);">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <i class="fa-solid fa-clock-rotate-left modal-icon"></i>
+          <div>
+            <h3>Agent Reasoning & Audit Trail</h3>
+            <p>Chronological record of autonomous reasoning, detected blockers, and human approvals</p>
+          </div>
+        </div>
+        <button class="close-modal-btn" id="closeAuditModalBtn" type="button" aria-label="Close Audit Log"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div id="auditTimelineContainer" style="display: flex; flex-direction: column; gap: 10px;">
+          <!-- Injected dynamically -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-text-action" id="exportAuditJsonBtn" type="button"><i class="fa-solid fa-download"></i> Export Audit Log (JSON)</button>
+        <button class="btn-save-settings" id="closeAuditModalBottomBtn" type="button">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent Harness Info & Architecture Modal -->
+  <div class="modal-backdrop" id="engineModal" aria-hidden="true">
+    <div class="modal-card" style="width: min(94vw, 720px);">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <i class="fa-solid fa-brain modal-icon"></i>
+          <div>
+            <h3>Agent Harness Reasoning Engine</h3>
+            <p>How our intelligence harness converts email threads into dependency-aware workflows</p>
+          </div>
+        </div>
+        <button class="close-modal-btn" id="closeEngineModalBtn" type="button" aria-label="Close Engine Info"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body" style="line-height: 1.6; font-size: 0.86rem;">
+        <div style="padding: 16px; background: var(--bg-card-subtle); border: 1px solid var(--border-subtle); border-radius: 12px; margin-bottom: 20px;">
+          <h4 style="font-size: 1rem; color: var(--text-heading); margin-bottom: 6px;">"Email tells you what people said. Our system tells you what needs to happen next."</h4>
+          <p style="color: var(--text-main); font-size: 0.82rem;">People lose track of critical deliverables hidden inside lengthy email chains. The Agent Harness continuously analyzes thread contexts, builds cross-stakeholder dependency graphs, and flags bottlenecks before milestones fail.</p>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px;">
+          <div style="padding: 14px; background: var(--bg-card-subtle); border: 1px solid var(--border-subtle); border-radius: 10px;">
+            <strong style="color: var(--text-heading); display: block; margin-bottom: 4px;"><i class="fa-solid fa-magnifying-glass" style="color: var(--text-heading);"></i> 1. Extraction</strong>
+            <span style="color: var(--text-muted); font-size: 0.78rem;">Parses commitments, deadlines, and deliverables from unstructured conversation streams.</span>
+          </div>
+          <div style="padding: 14px; background: var(--bg-card-subtle); border: 1px solid var(--border-subtle); border-radius: 10px;">
+            <strong style="color: var(--text-heading); display: block; margin-bottom: 4px;"><i class="fa-solid fa-diagram-project" style="color: var(--status-amber);"></i> 2. Dependency Graph</strong>
+            <span style="color: var(--text-muted); font-size: 0.78rem;">Maps who is responsible and who is waiting on whom to detect critical path blockers.</span>
+          </div>
+          <div style="padding: 14px; background: var(--bg-card-subtle); border: 1px solid var(--border-subtle); border-radius: 10px;">
+            <strong style="color: var(--text-heading); display: block; margin-bottom: 4px;"><i class="fa-solid fa-shield-halved" style="color: var(--status-green);"></i> 3. Human Signoff</strong>
+            <span style="color: var(--text-muted); font-size: 0.78rem;">Proposes actions (reminders, drafts, tickets) with strict human approval required.</span>
+          </div>
+          <div style="padding: 14px; background: var(--bg-card-subtle); border: 1px solid var(--border-subtle); border-radius: 10px;">
+            <strong style="color: var(--text-heading); display: block; margin-bottom: 4px;"><i class="fa-solid fa-bolt" style="color: var(--status-blue);"></i> 4. Dispatch Execution</strong>
+            <span style="color: var(--text-muted); font-size: 0.78rem;">Sends approved emails, linear tickets, and Slack reminders with verifiable audit logs.</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <span style="font-size: 0.75rem; color: var(--status-green); font-weight: 700;"><i class="fa-solid fa-circle-check"></i> System Status: Active & Operational</span>
+        <button class="btn-save-settings" id="closeEngineModalBottomBtn" type="button">Understood</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Team Collaborator Status Modal -->
+  <div class="modal-backdrop" id="teamMemberModal" aria-hidden="true">
+    <div class="modal-card" style="width: min(94vw, 560px);">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <i class="fa-solid fa-user-gear modal-icon"></i>
+          <div>
+            <h3 id="teamModalMemberName">Collaborator Status</h3>
+            <p id="teamModalMemberRole">Team CIPHERSQUAD</p>
+          </div>
+        </div>
+        <button class="close-modal-btn" id="closeTeamMemberModalBtn" type="button" aria-label="Close Collaborator"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body" id="teamModalBody">
+        <!-- Injected dynamically -->
+      </div>
+      <div class="modal-footer">
+        <button class="btn-text-action" id="teamModalPingBtn" type="button"><i class="fa-solid fa-bell"></i> Send Nudge / Ping</button>
+        <button class="btn-save-settings" id="teamModalFilterBtn" type="button"><i class="fa-solid fa-filter"></i> View Member Threads</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Backend Integration Hook Modal -->
+  <div class="modal-backdrop" id="backendModal" aria-hidden="true">
+    <div class="modal-card" style="width: min(94vw, 680px);">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <i class="fa-solid fa-plug-circle-bolt modal-icon"></i>
+          <div>
+            <h3>Backend Harness Hook API</h3>
+            <p>Connect your Python agent orchestrator or Node.js server in real-time</p>
+          </div>
+        </div>
+        <button class="close-modal-btn" id="closeBackendModalBtn" type="button" aria-label="Close Backend Hook"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 14px;">The client exposes a reactive global runtime hook on <code style="background: var(--bg-card-subtle); padding: 2px 6px; border-radius: 4px; color: var(--text-heading);">window.AgentHarness</code> for two-way synchronization.</p>
+        <div style="background: #090d16; color: #f8fafc; padding: 14px; border-radius: 10px; font-family: monospace; font-size: 0.8rem; line-height: 1.5; overflow-x: auto; margin-bottom: 14px;">
+<span style="color: #64748b;">// Feed agent-extracted threads and dependencies from Python / LangChain:</span><br>
+<span style="color: #38bdf8;">window</span>.AgentHarness.loadThreadData(analyzedThreads);<br><br>
+<span style="color: #64748b;">// Push new audit reasoning steps:</span><br>
+<span style="color: #38bdf8;">window</span>.AgentHarness.pushAuditLog(<span style="color: #86efac;">"Detected Blocker: Schema review delay"</span>);<br><br>
+<span style="color: #64748b;">// Read current client state and approved actions:</span><br>
+<span style="color: #93c5fd;">const</span> state = <span style="color: #38bdf8;">window</span>.AgentHarness.getState();
+        </div>
+        <button type="button" class="btn-text-action" id="copyCodeSnippetBtn" style="color: var(--text-heading); font-size: 0.78rem;"><i class="fa-solid fa-copy"></i> Copy Integration Snippet</button>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-text-action" id="simulateAgentSyncBtn" type="button"><i class="fa-solid fa-rotate"></i> Simulate Inbound Agent Sync</button>
+        <button class="btn-save-settings" id="closeBackendModalBottomBtn" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div class="toast-container" id="toastContainer" aria-live="polite"></div>
+</body>
+</html>
