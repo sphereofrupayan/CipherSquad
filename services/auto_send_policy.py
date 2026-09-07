@@ -99,11 +99,20 @@ class AutoSendPolicy:
                 "flags": ["mode_prepare_only"]
             }
 
-        # 2. Check for generated files / workspace artifacts
-        if artifacts and len(artifacts) > 0:
+        # 2. Only files that are actually intended to leave Mailmate count
+        # as outbound attachments. Internal workspace notes/checklists and
+        # the Gmail draft object itself must not block a safe acknowledgement.
+        outbound_artifacts = [
+            artifact for artifact in artifacts
+            if artifact.get("attach_to_reply") is True
+            or artifact.get("external_delivery") is True
+        ]
+        if outbound_artifacts:
             flags.append("workspace_files")
-            file_names = [a.get("name", "file") for a in artifacts]
-            explanation_reasons.append(f"Generated files attached ({', '.join(file_names[:2])})")
+            file_names = [a.get("name", "file") for a in outbound_artifacts]
+            explanation_reasons.append(
+                f"Generated files intended for external delivery ({', '.join(file_names[:2])})"
+            )
 
         # 3. Check for substantive commitments or promises
         for pattern in cls.COMMITMENT_PATTERNS:

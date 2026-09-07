@@ -1,5 +1,5 @@
-import os
 import json
+import os
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -8,6 +8,8 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+
+from services.calendar_conflicts import calculate_conflicts
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CREDENTIALS_FILE = BASE_DIR / 'data' / 'google_credentials.json'
@@ -171,31 +173,15 @@ def _normalize(event):
         'transparency': event.get('transparency') or 'opaque',
         'updated': event.get('updated') or '',
         'source': source,
+        'blocking': source == 'google' and not all_day and event.get('status') != 'cancelled' and event.get('transparency', 'opaque') != 'transparent',
         'agent_harness': private_props,
         'urgency': private_props.get('agent_harness_urgency') or '',
     }
 
 
 def _annotate_conflicts(events):
-    timed = []
-    for event in events:
-        start = _parse_dt(event.get('start'))
-        end = _parse_dt(event.get('end'))
-        if start and end and event.get('status') != 'cancelled' and event.get('transparency') != 'transparent':
-            timed.append((event, start, end))
-    for event in events:
-        event['conflict'] = False
-        event['conflict_with'] = []
-    for i in range(len(timed)):
-        a, a_start, a_end = timed[i]
-        for j in range(i + 1, len(timed)):
-            b, b_start, b_end = timed[j]
-            if a_start < b_end and b_start < a_end:
-                a['conflict'] = True
-                b['conflict'] = True
-                a['conflict_with'].append({'id': b['id'], 'title': b['title']})
-                b['conflict_with'].append({'id': a['id'], 'title': a['title']})
-    return events
+    annotated, _ = calculate_conflicts(events)
+    return annotated
 
 
 def list_events(start=None, end=None, limit=250):
@@ -211,15 +197,9 @@ def list_events(start=None, end=None, limit=250):
         orderBy='startTime',
         showDeleted=False,
     ).execute()
-    seen = set()
     events = []
     for raw in response.get('items') or []:
-        normalized = _normalize(raw)
-        key = (normalized.get('id'), normalized.get('start'), normalized.get('title'))
-        if key in seen:
-            continue
-        seen.add(key)
-        events.append(normalized)
+        events.append(_normalize(raw))
     return _annotate_conflicts(events)
 
 

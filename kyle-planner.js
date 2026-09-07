@@ -3,7 +3,7 @@
     return {
       id: `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
       goal: String(message || '').trim().slice(0, 180),
-      steps: (response.actions || []).slice(0, 8),
+      steps: (response.actions || []).slice(0, 24),
       references: resolution.references || [],
       createdAt: new Date().toISOString()
     };

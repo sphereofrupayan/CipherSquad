@@ -26,6 +26,12 @@
     }
     const opened = [...completed].reverse().find(step => step.action?.tool === 'inbox.open_email');
     if (opened) return `I opened ${opened.action.args?.reference?.label || 'that email'}.`;
+    const deleted = [...completed].reverse().find(step => step.action?.tool === 'calendar.delete_confirmed');
+    if (deleted) {
+      const count = Number(deleted.result?.deletedCount || 0);
+      const failed = Number(deleted.result?.failedCount || 0);
+      return failed ? `${count} deleted. ${failed} could not be removed.` : `${count} calendar event${count === 1 ? '' : 's'} deleted.`;
+    }
     const navigation = [...completed].reverse().find(step => step.action?.tool === 'navigation.open');
     if (navigation) {
       const page = navigation.action.args?.page || 'page';
@@ -79,6 +85,7 @@
         if (result?.requiresApproval && result?.previewId) {
           const commitTool = action.tool === 'calendar.preview_move' ? 'calendar.commit_move'
             : action.tool === 'calendar.preview_create' ? 'calendar.commit_create'
+              : action.tool === 'calendar.delete_prepare' ? 'calendar.delete_confirmed'
               : null;
           if (commitTool) {
             pendingApproval = {
@@ -88,7 +95,12 @@
             transaction.status = 'waiting-approval';
             transaction.pendingApproval = { tool: commitTool, previewId: result.previewId };
             setState('WAITING_APPROVAL');
-            window.KyleMotion?.caption('Preview ready. Say confirm to save it.', { transient: true });
+            window.KyleMotion?.caption(
+              commitTool === 'calendar.delete_confirmed'
+                ? 'Review the event list, then confirm or cancel.'
+                : 'Preview ready. Say confirm to save it.',
+              { transient: true }
+            );
             break;
           }
         }
@@ -136,8 +148,9 @@
       goal: `Approve ${pending.action.tool}`,
       steps: [pending.action]
     });
+    const result = transaction.steps?.at(-1)?.result || {};
     return transaction.status === 'complete'
-      ? { ok: true, message: 'Done. I saved the change.' }
+      ? { ok: true, message: transaction.narration || 'Done. I saved the change.', result }
       : { ok: false, message: 'I could not save that change.' };
   }
 
@@ -148,6 +161,7 @@
     document.querySelector(`[data-kyle-preview-id="${previewId}"]`)?.remove();
     pendingApproval.transaction.status = 'cancelled';
     pendingApproval = null;
+    window.KyleUi?.active?.closeSurface?.();
     setState('DONE');
     return { ok: true, message: 'Cancelled. I did not change your calendar.' };
   }

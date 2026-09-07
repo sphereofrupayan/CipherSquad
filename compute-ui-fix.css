@@ -1,0 +1,46 @@
+﻿.kyle-compute-banner.mailmate-compute-compact {
+  margin: 0 0 10px !important;
+  padding: 8px 11px !important;
+  min-height: 0 !important;
+  border-radius: 10px !important;
+  box-shadow: none !important;
+  gap: 10px !important;
+  background: rgba(255,255,255,.78) !important;
+}
+
+.kyle-compute-banner.mailmate-compute-compact .kyle-compute-icon {
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 8px !important;
+  font-size: .75rem !important;
+}
+
+.kyle-compute-banner.mailmate-compute-compact .kyle-compute-title-row strong {
+  font-size: .8rem !important;
+}
+
+.kyle-compute-banner.mailmate-compute-compact .kyle-compute-state {
+  min-height: 18px !important;
+  padding: 1px 6px !important;
+  font-size: .59rem !important;
+}
+
+.kyle-compute-banner.mailmate-compute-compact .kyle-compute-copy p {
+  margin: 2px 0 0 !important;
+  font-size: .74rem !important;
+}
+
+.kyle-compute-banner.mailmate-compute-compact .kyle-compute-copy small {
+  font-size: .66rem !important;
+}
+
+.kyle-compute-banner.mailmate-compute-compact .kyle-compute-actions button {
+  min-height: 30px !important;
+  padding: 5px 9px !important;
+  font-size: .72rem !important;
+}
+
+.kyle-compute-banner.mailmate-compute-compact.needs-compute {
+  border-color: rgba(245,158,11,.36) !important;
+  background: #fffbeb !important;
+}

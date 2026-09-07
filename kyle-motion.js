@@ -33,6 +33,12 @@
       'calendar.open_event': `Opening ${label}...`,
       'calendar.preview_move': `Previewing a new time for ${label}...`,
       'calendar.preview_create': 'Finding a place on your calendar...',
+      'calendar.delete_prepare': 'Resolving the exact calendar items...',
+      'calendar.delete_confirmed': 'Removing the confirmed calendar items...',
+      'calendar.refresh': 'Refreshing Google Calendar...',
+      'automation.run_now': 'Starting that scheduled Kyle run...',
+      'automation.enable': 'Enabling that automation...',
+      'automation.disable': 'Pausing that automation...',
       'work.focus': `Focusing ${label}...`,
       'ui.highlight': 'Showing you where...',
       'ui.scroll_to': 'Bringing it into view...'

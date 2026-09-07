@@ -1,8 +1,14 @@
+// Keep the dashboard light until the user explicitly chooses dark mode.
+const savedTheme = localStorage.getItem('mailmate-theme');
+if (savedTheme === 'dark') {
+  document.documentElement.setAttribute('data-theme', 'dark');
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   const API_BASE = window.location.origin;
   const $ = id => document.getElementById(id);
   const els = {
-    tabs: [...document.querySelectorAll('.nav-tab')],
+    tabs: [...document.querySelectorAll('nav.nav-tabs .nav-tab')],
     panels: [...document.querySelectorAll('.tab-panel')],
     filters: [...document.querySelectorAll('.filter-tab')],
     pageTitle: $('pageTitle'),
@@ -45,13 +51,16 @@ document.addEventListener('DOMContentLoaded', () => {
     inboxFilter: 'all',
     currentPage: 'overview',
     calendarEvents: [],
+    calendarConflictPairs: [],
     calendarWeekStart: startOfWeek(new Date()),
     calendarSelectedEventId: null,
     calendarSyncTimer: null,
+    inboxSyncTimer: null,
     calendarSyncing: false,
     calendarLastSyncAt: null,
     calendarSyncSeq: 0,
-    calendarDismissedMarkers: new Set()
+    calendarDismissedMarkers: new Set(),
+    automations: []
   };
 
   const pageCopy = {
@@ -72,6 +81,7 @@ document.addEventListener('DOMContentLoaded', () => {
     bindEvents();
     registerStaticObjects();
     initCalendarControls();
+    initAutomationControls();
     setProfile();
     bindAutopilotSettings();
     loadWorkSettings();
@@ -80,8 +90,10 @@ document.addEventListener('DOMContentLoaded', () => {
     hydrateSessionSnapshot();
     const inboxPromise = loadInbox(false);
     const healthPromise = loadHealth();
-    await Promise.allSettled([inboxPromise, healthPromise]);
+    const automationsPromise = loadAutomations();
+    await Promise.allSettled([inboxPromise, healthPromise, automationsPromise]);
     startCalendarAutoSync();
+    startInboxAutoSync();
   }
 
   function sessionSnapshotKey() {
@@ -150,8 +162,38 @@ document.addEventListener('DOMContentLoaded', () => {
       els.filters.forEach(item => item.classList.toggle('active', item === filter));
       renderEmails(state.data?.emails || []);
     }));
-    els.refreshBtn?.addEventListener('click', () => loadInbox(true));
+    els.refreshBtn?.addEventListener('click', async () => {
+      const btn = els.refreshBtn;
+      const icon = $('refreshIcon');
+      const label = $('refreshLabel');
+      if (btn.classList.contains('is-refreshing')) return;
+      btn.classList.add('is-refreshing');
+      if (label) label.textContent = 'Syncing…';
+      try {
+        await loadInbox(true);
+      } finally {
+        btn.classList.remove('is-refreshing');
+        if (label) label.textContent = 'Refresh';
+      }
+    });
     $('logoutBtn')?.addEventListener('click', logout);
+
+    const themeToggleBtn = $('themeToggleBtn');
+    const settingsThemeToggle = $('settingDarkMode');
+    function setDarkMode(enabled) {
+      document.documentElement.toggleAttribute('data-theme', enabled);
+      if (enabled) document.documentElement.setAttribute('data-theme', 'dark');
+      localStorage.setItem('mailmate-theme', enabled ? 'dark' : 'light');
+      if (settingsThemeToggle) settingsThemeToggle.checked = enabled;
+      if (themeToggleBtn) {
+        themeToggleBtn.innerHTML = enabled
+          ? '<i class="fas fa-sun"></i><span>Light Mode</span>'
+          : '<i class="fas fa-moon"></i><span>Dark Mode</span>';
+      }
+    }
+    setDarkMode(document.documentElement.getAttribute('data-theme') === 'dark');
+    themeToggleBtn?.addEventListener('click', () => setDarkMode(document.documentElement.getAttribute('data-theme') !== 'dark'));
+    settingsThemeToggle?.addEventListener('change', event => setDarkMode(event.target.checked));
 
     window.addEventListener('harness:open-email', event => {
       const email = event.detail;
@@ -185,7 +227,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const copy = pageCopy[name] || pageCopy.overview;
     els.pageTitle.textContent = copy[0];
     els.pageSubtitle.textContent = copy[1];
-    document.title = `Agent Harness - ${copy[0]}`;
+    document.title = `MailMate - ${copy[0]}`;
     els.tabs.forEach(tab => tab.classList.toggle('active', tab.dataset.tab === name));
     els.panels.forEach(panel => panel.classList.toggle('active', panel.id === `tab-${name}`));
     window.MailmateContext?.setPage(name);
@@ -197,6 +239,7 @@ document.addEventListener('DOMContentLoaded', () => {
       currentPage: name
     });
     if (name === 'calendar') refreshCalendar(false);
+    if (name === 'automations') loadAutomations();
     if (name === 'work') renderWork(state.data);
     if (name === 'status') renderStatus();
     updateWorkLivePolling();
@@ -266,6 +309,7 @@ document.addEventListener('DOMContentLoaded', () => {
       window.Kyle?.setContext({
         ...(state.data || {}),
         calendarEvents: state.calendarEvents,
+        workJobs: workJobs,
         health: state.health,
         currentPage: state.currentPage
       });
@@ -330,7 +374,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     clearSteps();
     setStep('auth', 'done', 'Gmail session found');
-    setStep('cache', 'active', 'Reading Supabase cache');
+    setStep('cache', 'active', 'Checking current mailbox context');
 
     try {
       setStep('cache', 'done', forceRefresh ? 'Refresh requested' : 'Cache checked first');
@@ -346,11 +390,21 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await response.json();
       setStep('extract', 'done', data.cached ? 'Loaded processed context' : 'New context extracted');
       setStep('store', 'active', 'Saving processed context');
-      setStep('store', 'done', data.cached ? 'Supabase context reused' : (data.cache_mode ? `Saved · ${data.cache_mode}` : 'Current context ready'));
+      setStep('store', 'done', 'Current transient context ready');
 
       state.data = data;
       state.calendarDismissedMarkers = new Set(data.calendar_dismissed_markers || []);
       renderDashboard(data);
+
+      try {
+        const workResponse = await fetch(`${API_BASE}/api/work/jobs?ensure=1`, { cache: 'no-store' });
+        if (workResponse.ok) {
+          workJobs = await workResponse.json();
+          renderOverviewWorkingNow();
+        }
+      } catch (workSyncError) {
+        console.debug('Work sync notice:', workSyncError);
+      }
       saveSessionSnapshot(data);
       if (data.user) setProfile(data.user);
 
@@ -372,6 +426,7 @@ document.addEventListener('DOMContentLoaded', () => {
       window.Kyle?.setContext({
         ...data,
         calendarEvents: state.calendarEvents,
+        workJobs: workJobs,
         health: state.health,
         currentPage: state.currentPage
       });
@@ -397,7 +452,7 @@ document.addEventListener('DOMContentLoaded', () => {
       els.actionList.innerHTML = activeJobs.map(job => {
         const displayTitle = cleanJobTitle(job.clean_title || job.title, job.source?.subject);
         const latestStep = (job.steps && job.steps.length > 0) ? job.steps[job.steps.length - 1] : null;
-        const stepText = latestStep ? (latestStep.label || latestStep.thought || latestStep.action || 'Executing...') : (job.source?.snippet || 'Agent working...');
+        const stepText = latestStep ? (latestStep.label || latestStep.thought || latestStep.action || 'Executing...') : (decodeHtml(job.source?.snippet) || 'Agent working...');
         const badgeText = job.status === 'working' ? 'Working' : job.status.replace(/_/g, ' ');
         return `
           <article data-kyle-type="work-item" data-kyle-id="${escapeHtml(job.id)}" data-kyle-label="${escapeHtml(displayTitle)}">
@@ -442,9 +497,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const attention = data.needs_attention || [];
     els.attentionList.innerHTML = attention.length
       ? attention.slice(0, 5).map((item, index) => {
-          const title = item.subject || item.title || conciseActionTitle(item.description || item.reason) || 'Your task';
-          const deadline = item.deadline ? `<small>${escapeHtml(item.deadline)}</small>` : '';
-          return `<li data-kyle-type="work-item" data-kyle-id="attention-${index}" data-kyle-label="${escapeHtml(title)}"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(item.description || item.reason || 'Needs follow-up')}</span>${deadline}</li>`;
+          const title = decodeHtml(item.subject || item.title || conciseActionTitle(item.description || item.reason) || 'Your task');
+          const description = decodeHtml(item.description || item.reason || 'Needs follow-up');
+          const deadline = item.deadline ? `<small>${escapeHtml(decodeHtml(item.deadline))}</small>` : '';
+          return `<li data-kyle-type="work-item" data-kyle-id="attention-${index}" data-kyle-label="${escapeHtml(title)}"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(description)}</span>${deadline}</li>`;
         }).join('')
       : '<li><strong>Inbox clear</strong><span>No urgent dependencies detected in this scan.</span></li>';
 
@@ -517,6 +573,37 @@ document.addEventListener('DOMContentLoaded', () => {
       </div>`;
   }
 
+  function emailOverviewText(email) {
+    return email.pdf_summary || email.summary || email.ai_summary || email.snippet || 'No preview available.';
+  }
+
+  const prefetchTimers = new WeakMap();
+
+  function prefetchEmail(email) {
+    const id = String(emailKey(email) || '');
+    if (!id || state.fullMessages.has(id) || state.loadingMessageIds.has(id)) return;
+    state.loadingMessageIds.add(id);
+    fetch(`${API_BASE}/api/gmail/messages/${encodeURIComponent(id)}`, { cache: 'no-store' })
+      .then(async response => {
+        if (!response.ok) return null;
+        return response.json();
+      })
+      .then(detail => {
+        if (!detail || detail.error) return;
+        state.fullMessages.set(id, detail);
+        const source = state.data?.emails?.find(item => emailKey(item) === id);
+        if (source) Object.assign(source, detail, { is_read: source.is_read });
+        if (state.selectedEmailId === id) {
+          const fullSelected = { ...email, ...detail };
+          renderEmailDetail(fullSelected, false);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        state.loadingMessageIds.delete(id);
+      });
+  }
+
   function renderEmails(emails) {
     window.MailmateObjects?.unregisterType('email');
     const filtered = emails.filter(email => {
@@ -539,7 +626,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ${privacyPillHtml(email.privacy_gate)}
               </div>
               <p class="email-subject">${escapeHtml(email.subject || 'No subject')}</p>
-              <p class="email-preview">${escapeHtml(email.snippet || 'No preview available.')}</p>
+              <p class="email-preview">${safeSnippet(emailOverviewText(email))}</p>
             </div>
             <time class="email-time">${escapeHtml(formatDate(email.date || email.timestamp))}</time>
           </article>`;
@@ -559,7 +646,25 @@ document.addEventListener('DOMContentLoaded', () => {
           important: isImportant(email)
         }
       }, item);
+      item.addEventListener('mouseenter', () => {
+        const timer = setTimeout(() => {
+          prefetchEmail(email);
+        }, 200);
+        prefetchTimers.set(item, timer);
+      });
+      item.addEventListener('mouseleave', () => {
+        const timer = prefetchTimers.get(item);
+        if (timer) {
+          clearTimeout(timer);
+          prefetchTimers.delete(item);
+        }
+      });
       item.addEventListener('click', () => {
+        const timer = prefetchTimers.get(item);
+        if (timer) {
+          clearTimeout(timer);
+          prefetchTimers.delete(item);
+        }
         openEmail(email);
       });
     });
@@ -597,7 +702,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     renderEmails(state.data?.emails || []);
-    if (state.fullMessages.has(id) || state.loadingMessageIds.has(id)) return;
+    if (state.fullMessages.has(id)) return;
+    if (state.loadingMessageIds.has(id)) {
+      renderEmailDetail(email, true);
+      return;
+    }
 
     state.loadingMessageIds.add(id);
     renderEmailDetail(email, true);
@@ -607,7 +716,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!response.ok) throw new Error(detail.error || `Gmail message returned ${response.status}`);
       state.fullMessages.set(id, detail);
       const source = state.data?.emails?.find(item => emailKey(item) === id);
-      if (source) Object.assign(source, detail, { is_read: source.is_read });
+      if (source) Object.assign(source, detail, { is_read: source.is_read ?? detail.is_read });
     } catch (error) {
       addError('Gmail: ' + error.message);
     } finally {
@@ -621,6 +730,21 @@ document.addEventListener('DOMContentLoaded', () => {
       els.emailDetail.innerHTML = '<div class="empty-detail"><i class="far fa-envelope-open"></i><p>Select an email to read it here.</p></div>';
       return;
     }
+
+    const hasFullBody = Boolean(email.body_html || email.body);
+    let bodyContent = '';
+    if (email.body_html) {
+      bodyContent = `<div class="email-html-content">${email.body_html}</div>`;
+    } else if (hasFullBody) {
+      bodyContent = linkifyText(email.body);
+    } else if (loading) {
+      bodyContent = `
+        <div class="email-prefetch-indicator"><i class="fas fa-circle-notch fa-spin"></i> Loading full message...</div>
+        <div class="email-snippet-content">${safeSnippet(email.snippet || 'Loading preview...')}</div>`;
+    } else {
+      bodyContent = linkifyText(email.body || email.snippet || 'This message has no readable text body.');
+    }
+
     els.emailDetail.innerHTML = `
       <header class="email-detail-header">
         <div class="email-detail-title-row">
@@ -634,7 +758,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="email-detail-meta"><span>${escapeHtml(email.sender || 'Unknown sender')}</span><time>${escapeHtml(formatDate(email.date || email.timestamp, true))}</time></div>
         ${privacyDetailBox(email.privacy_gate)}
       </header>
-      <div class="email-body" ${loading ? 'aria-busy="true"' : ''}>${loading ? '<span class="email-loading">Loading full message...</span>' : escapeHtml(email.body || email.snippet || 'This message has no readable text body.')}</div>`;
+      <div class="email-body" ${loading ? 'aria-busy="true"' : ''}>${bodyContent}</div>`;
     $('emailTrashBtn')?.addEventListener('click', () => trashEmail(email));
     const reference = emailReference(email);
     window.MailmateObjects?.register({
@@ -754,10 +878,14 @@ document.addEventListener('DOMContentLoaded', () => {
       case 'needs_input':
         return { label: 'Needs input', cls: 'badge-needs_input' };
       case 'resolved_external':
-        return { label: 'Replied via Gmail', cls: 'badge-resolved_external' };
+        return { label: 'Replied manually in Gmail', cls: 'badge-resolved_external' };
+      case 'ignored_outbound':
+        return { label: 'Ignored sent mail', cls: 'badge-cancelled' };
       case 'sent':
       case 'approved_sent':
         return { label: 'Sent via Gmail', cls: 'badge-sent' };
+      case 'completed':
+        return { label: 'Complete', cls: 'badge-sent' };
       case 'cancelled':
         return { label: 'Cancelled', cls: 'badge-cancelled' };
       case 'failed':
@@ -792,7 +920,7 @@ document.addEventListener('DOMContentLoaded', () => {
       workLivePollTimer = setInterval(async () => {
         if (document.hidden) return;
         try {
-          const res = await fetch(`${API_BASE}/api/work/jobs`);
+          const res = await fetch(`${API_BASE}/api/work/jobs?ensure=1`, { cache: 'no-store' });
           if (res.ok) {
             workJobs = await res.json();
             renderOverviewWorkingNow();
@@ -807,7 +935,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
           console.debug('Work live poll notice:', e);
         }
-      }, 1500);
+      }, 4000);
     } else if (!shouldPoll && workLivePollTimer) {
       clearInterval(workLivePollTimer);
       workLivePollTimer = null;
@@ -822,7 +950,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ]);
     const readyStatuses = new Set(['waiting_approval', 'auto_send_countdown']);
     const needsInputStatuses = new Set(['needs_input']);
-    const historyStatuses = new Set(['sent', 'approved_sent', 'resolved_external', 'cancelled', 'failed']);
+    const historyStatuses = new Set(['sent', 'approved_sent', 'resolved_external', 'ignored_outbound', 'completed', 'cancelled', 'failed']);
 
     const activeList = list.filter(j => activeStatuses.has(j.status));
     const readyList = list.filter(j => readyStatuses.has(j.status));
@@ -839,7 +967,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const senderDisplay = (job.source?.sender || '').split('<')[0].trim();
         const latestStep = (job.steps && job.steps.length > 0) ? job.steps[job.steps.length - 1] : null;
         const stepProgress = activeStatuses.has(job.status) && latestStep ? (latestStep.label || latestStep.thought || latestStep.action || '') : '';
-        const subtitle = stepProgress || ((senderDisplay ? senderDisplay + ' · ' : '') + (job.source?.snippet || job.source?.subject || 'Preparation work'));
+        const subtitle = stepProgress || ((senderDisplay ? senderDisplay + ' · ' : '') + (decodeHtml(job.source?.snippet) || decodeHtml(job.source?.subject) || 'Preparation work'));
         return `
           <article class="work-item ${isSel ? 'active' : ''}" data-job-id="${escapeHtml(job.id)}" data-kyle-type="work-item" data-kyle-id="${escapeHtml(job.id)}" data-kyle-label="${escapeHtml(displayTitle)}">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
@@ -950,6 +1078,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusEl = $('workRunStatus');
     const emptyPlaceholder = $('workEmptyPlaceholder');
     const preparedCard = $('workPreparedCard');
+    const preparedSummary = $('workPreparedSummary');
     const collapsiblesGroup = $('workCollapsiblesGroup');
 
     const displayTitle = cleanJobTitle(job.clean_title || job.title, job.source?.subject);
@@ -971,23 +1100,80 @@ document.addEventListener('DOMContentLoaded', () => {
     if (collapsiblesGroup) collapsiblesGroup.style.display = 'flex';
 
     const isResolvedExternal = job.status === 'resolved_external';
+    const isIgnoredOutbound = job.status === 'ignored_outbound';
     const isNeedsInput = job.status === 'needs_input';
     const isSent = job.status === 'sent' || job.status === 'approved_sent' || isResolvedExternal;
     const isCountdown = job.status === 'auto_send_countdown';
+    const isAutomation = job.type === 'automation_run';
     const verdict = job.policy_verdict || {};
+    const preparedArtifacts = (job.artifacts || []).filter(artifact => artifact.type === 'file');
+    if (preparedSummary) {
+      if (job.type === 'automation_run') {
+        preparedSummary.textContent = job.status === 'working'
+          ? 'Kyle is checking Gmail and Calendar now. Progress appears below.'
+          : (job.output?.summary || 'Kyle completed this scheduled workspace check.');
+      } else {
+        const fileCopy = preparedArtifacts.length ? ` and ${preparedArtifacts.length} supporting file${preparedArtifacts.length === 1 ? '' : 's'}` : '';
+        preparedSummary.textContent = `Kyle prepared a reply${fileCopy}.`;
+      }
+    }
+
+    const reviewEmailBtn = $('workReviewEmailBtn');
+    if (reviewEmailBtn) {
+      const sourceId = String(job.source?.message_id || job.source?.id || '');
+      reviewEmailBtn.disabled = !sourceId;
+      reviewEmailBtn.onclick = async () => {
+        if (!sourceId) return;
+        const emails = state.data?.emails || [];
+        const source = emails.find(email => emailKey(email) === sourceId) || {
+          id: sourceId,
+          gmail_id: sourceId,
+          sender: job.source?.sender || 'Unknown sender',
+          subject: job.source?.subject || 'No subject',
+          snippet: job.source?.snippet || '',
+          date: job.source?.date || ''
+        };
+        if (state.data && !emails.some(email => emailKey(email) === sourceId)) {
+          state.data.emails = [source, ...emails];
+        }
+        reviewEmailBtn.disabled = true;
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        showTab('inbox');
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        openEmail(source);
+        await window.KyleMotion?.reveal?.({ type: 'email', id: sourceId });
+        reviewEmailBtn.disabled = false;
+      };
+    }
 
     // 1. Policy Banner
     const policyBanner = $('workPolicyBanner');
     const policyBadge = $('workPolicyBadge');
     const policyCat = $('workPolicyCategory');
     const policyExpl = $('workPolicyExplanation');
+    const preparedTag = $('workPreparedTag');
+    const replyBox = $('workReplyBox');
+    const sourceDetails = $('workSourceDetails');
+    if (preparedTag) preparedTag.innerHTML = isAutomation
+      ? '<i class="fas fa-check"></i> SCHEDULED RUN'
+      : '<i class="fas fa-sparkles"></i> READY FOR REVIEW';
+    if (replyBox) replyBox.style.display = isAutomation ? 'none' : 'flex';
+    if (sourceDetails) sourceDetails.hidden = isAutomation;
 
     if (policyBanner) {
-      if (isResolvedExternal) {
+      policyBanner.style.display = isAutomation ? 'none' : '';
+      if (isAutomation) {
+        // Automation summaries are already presented above; no mail-send policy applies.
+      } else if (isResolvedExternal) {
         policyBanner.className = 'policy-banner auto-sent';
-        if (policyBadge) policyBadge.textContent = 'RESOLVED IN GMAIL';
-        if (policyCat) policyCat.textContent = 'Handled outside Mailmate';
-        if (policyExpl) policyExpl.textContent = 'You replied to this thread directly in Gmail. Mailmate reconciled this task and cleaned up its draft.';
+        if (policyBadge) policyBadge.textContent = 'VERIFIED IN GMAIL';
+        if (policyCat) policyCat.textContent = 'Replied manually';
+        if (policyExpl) policyExpl.textContent = 'Mailmate found a newer outbound Gmail message after the exact source email. This task is resolved.';
+      } else if (isIgnoredOutbound) {
+        policyBanner.className = 'policy-banner requires-approval';
+        if (policyBadge) policyBadge.textContent = 'SENT MAIL';
+        if (policyCat) policyCat.textContent = 'Not an inbound task';
+        if (policyExpl) policyExpl.textContent = 'This message was sent by you. Kyle Work only starts from verified inbound requests.';
       } else if (isNeedsInput) {
         policyBanner.className = 'policy-banner requires-approval';
         if (policyBadge) policyBadge.textContent = 'NEEDS INPUT';
@@ -1006,9 +1192,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (policyExpl) policyExpl.textContent = verdict.explanation || 'Low risk · Simple acknowledgement · No attachment · No commitment · Known sender';
       } else {
         policyBanner.className = 'policy-banner requires-approval';
-        if (policyBadge) policyBadge.textContent = 'HUMAN APPROVAL REQUIRED';
-        if (policyCat) policyCat.textContent = (verdict.category || 'Review needed').replace(/_/g, ' ');
-        if (policyExpl) policyExpl.textContent = verdict.explanation || 'Contains commitments or generated attachments that require human review.';
+        if (policyBadge) policyBadge.textContent = 'READY FOR REVIEW';
+        if (policyCat) policyCat.textContent = 'Prepared by Kyle';
+        if (policyExpl) policyExpl.textContent = preparedArtifacts.length
+          ? `Review the reply and ${preparedArtifacts.length} supporting file${preparedArtifacts.length === 1 ? '' : 's'} before sending.`
+          : 'Review the prepared reply before sending.';
       }
     }
 
@@ -1061,11 +1249,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const draftBadge = $('workDraftBadge');
     if (replyText) {
       replyText.value = job.output?.suggested_reply || (job.reply_draft || {}).body || '';
-      replyText.disabled = (job.status === 'sent' || job.status === 'approved_sent' || isResolvedExternal);
+      replyText.disabled = (job.status === 'sent' || job.status === 'approved_sent' || isResolvedExternal || isIgnoredOutbound);
     }
     if (draftBadge) {
       if (isResolvedExternal) {
-        draftBadge.innerHTML = `<span style="color:#0d9488;"><i class="fas fa-envelope-open-text"></i> Handled in Gmail · Draft removed</span>`;
+        draftBadge.innerHTML = `<span style="color:#0d9488;"><i class="fas fa-envelope-open-text"></i> Manual Gmail reply verified</span>`;
+      } else if (isIgnoredOutbound) {
+        draftBadge.innerHTML = `<span style="color:#64748b;"><i class="fas fa-ban"></i> Sent mail ignored</span>`;
+      } else if (job.status === 'sent' || job.status === 'approved_sent') {
+        const verified = job.output?.gmail_send_verified === true;
+        const sentId = job.output?.gmail_sent_message_id || '';
+        draftBadge.innerHTML = `<span style="color:#1e8e48;"><i class="fas fa-check-circle"></i> ${verified ? 'Sent & verified in Gmail' : 'Sent via Gmail API'}${sentId ? ` · ${escapeHtml(sentId.slice(-8))}` : ''}</span>`;
       } else if (isNeedsInput) {
         draftBadge.innerHTML = `<span style="color:#dc2626;"><i class="fas fa-circle-exclamation"></i> Deliverable missing</span>`;
       } else if (job.output?.gmail_draft_id) {
@@ -1078,7 +1272,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 4. Action Buttons
     const saveDraftBtn = $('workSaveDraftBtn');
     if (saveDraftBtn) {
-      saveDraftBtn.disabled = (job.status === 'sent' || job.status === 'approved_sent' || isResolvedExternal || isNeedsInput);
+      saveDraftBtn.disabled = (job.status === 'sent' || job.status === 'approved_sent' || isResolvedExternal || isIgnoredOutbound || isNeedsInput);
       saveDraftBtn.onclick = async () => {
         saveDraftBtn.disabled = true;
         saveDraftBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
@@ -1119,7 +1313,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const rerunBtn = $('workRerunBtn');
     if (rerunBtn) {
-      rerunBtn.disabled = (job.status === 'sent' || job.status === 'approved_sent' || isResolvedExternal);
+      rerunBtn.disabled = (job.status === 'sent' || job.status === 'approved_sent' || isResolvedExternal || isIgnoredOutbound);
       rerunBtn.onclick = async () => {
         rerunBtn.disabled = true;
         rerunBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rerunning...';
@@ -1137,7 +1331,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (approveBtn) {
       if (isResolvedExternal) {
         approveBtn.disabled = true;
-        approveBtn.innerHTML = '<i class="fas fa-check-double"></i> Replied via Gmail';
+        approveBtn.innerHTML = '<i class="fas fa-check-double"></i> Manual reply verified';
+      } else if (isIgnoredOutbound) {
+        approveBtn.disabled = true;
+        approveBtn.innerHTML = '<i class="fas fa-ban"></i> Sent mail ignored';
       } else if (isNeedsInput) {
         approveBtn.disabled = true;
         approveBtn.innerHTML = '<i class="fas fa-circle-question"></i> Needs Input';
@@ -1187,7 +1384,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const artifactsSection = $('workArtifactsSection');
     const artifactsList = $('workArtifactsList');
     if (artifactsSection && artifactsList) {
-      const artifacts = job.artifacts || [];
+      const artifacts = (job.artifacts || []).filter(art => {
+        if (art.type === 'email_draft' && !job.output?.gmail_draft_id) return false;
+        return true;
+      });
       if (artifacts.length > 0) {
         artifactsSection.style.display = 'flex';
         artifactsList.innerHTML = artifacts.map(art => {
@@ -1220,7 +1420,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const timeline = $('agentTimeline');
     const steps = job.steps || [];
 
-    if (stepsSummaryTitle) stepsSummaryTitle.textContent = `What Kyle did (${steps.length} steps)`;
+    if (stepsSummaryTitle) stepsSummaryTitle.textContent = `What Kyle did · ${steps.length} action${steps.length === 1 ? '' : 's'}`;
     if (stepsStatusBadge) {
       stepsStatusBadge.textContent = (job.status === 'sent' || job.status === 'approved_sent') ? 'Complete' :
                                      job.status === 'auto_send_countdown' ? 'Countdown active' : 'Ready for review';
@@ -1268,7 +1468,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (sourceSenderFull) sourceSenderFull.textContent = job.source?.sender || 'Unknown sender';
     if (sourceSubjectFull) sourceSubjectFull.textContent = job.source?.subject || 'No subject';
     if (sourceSubjectBadge) sourceSubjectBadge.textContent = (job.source?.subject || 'Email').slice(0, 24);
-    if (sourceSnippet) sourceSnippet.textContent = job.source?.snippet || 'No snippet available.';
+    if (sourceSnippet) sourceSnippet.textContent = decodeHtml(job.source?.snippet || job.source?.body) || 'No snippet available.';
     if (sourceMeta) {
       sourceMeta.textContent = job.source?.deadline ? `Deadline: ${job.source.deadline}` : 'Inbound Gmail thread';
     }
@@ -1354,6 +1554,23 @@ document.addEventListener('DOMContentLoaded', () => {
     autoPrepEl?.addEventListener('change', saveSettings);
     createDraftsEl?.addEventListener('change', saveSettings);
     modeRadios.forEach(r => r.addEventListener('change', saveSettings));
+
+    const kyleVoiceEl = $('settingKyleVoice');
+    if (kyleVoiceEl) {
+      const isMuted = localStorage.getItem('kyle_muted') === 'true';
+      kyleVoiceEl.checked = !isMuted;
+      kyleVoiceEl.addEventListener('change', () => {
+        const shouldMute = !kyleVoiceEl.checked;
+        localStorage.setItem('kyle_muted', shouldMute ? 'true' : 'false');
+        if (window.Kyle?.store) {
+          window.Kyle.store.muted = shouldMute;
+        }
+        window.dispatchEvent(new CustomEvent('kyle:toggle-mute'));
+      });
+      window.addEventListener('kyle:mute-change', event => {
+        kyleVoiceEl.checked = !event.detail?.muted;
+      });
+    }
   }
 
 
@@ -1364,13 +1581,16 @@ document.addEventListener('DOMContentLoaded', () => {
       ['Gmail read session', h.gmailAuthenticated || Boolean(state.userId)],
       ['Gmail draft & send permission', h.gmailWrite],
       ['Google Calendar read/write', h.calendarReadWrite],
-      ['Gemini', h.geminiConfigured],
+      ['Gemini cloud fallback', h.geminiConfigured],
       ['Local Privacy Gate', true],
       ['Browser speech recognition', Boolean(window.SpeechRecognition || window.webkitSpeechRecognition)],
       ['Browser text-to-speech', 'speechSynthesis' in window],
       ['Kyle action registry', Boolean(window.KyleActions)]
     ];
-    els.statusList.innerHTML = rows.map(([label, ok]) => `<li data-status="${ok ? 'Ready' : 'Unavailable'}"><strong>${escapeHtml(label)}</strong></li>`).join('');
+    els.statusList.innerHTML = rows.map(([label, ok]) => {
+      const statusText = ok ? 'Ready' : (label.startsWith('Gemini') ? 'Optional · off' : 'Unavailable');
+      return `<li data-status="${statusText}"><strong>${escapeHtml(label)}</strong></li>`;
+    }).join('');
 
     try {
       const res = await fetch(`${API_BASE}/api/system/context?reconcile=false`);
@@ -1395,12 +1615,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const rows = [
       ['Google Gmail (Draft & Send)', h.gmailWrite],
       ['Google Calendar', h.calendarReadWrite],
-      ['Gemini', h.geminiConfigured],
+      ['Gemini cloud fallback', h.geminiConfigured],
       ['Local Privacy Gate', true],
       ['Browser speech recognition', Boolean(window.SpeechRecognition || window.webkitSpeechRecognition)],
       ['Browser TTS', 'speechSynthesis' in window]
     ];
-    els.integrationList.innerHTML = rows.map(([label, ok]) => `<li data-status="${ok ? 'Connected' : 'Unavailable'}"><strong>${escapeHtml(label)}</strong></li>`).join('');
+    els.integrationList.innerHTML = rows.map(([label, ok]) => {
+      const statusText = ok ? 'Connected' : (label.startsWith('Gemini') ? 'Optional · off' : 'Unavailable');
+      return `<li data-status="${statusText}"><strong>${escapeHtml(label)}</strong></li>`;
+    }).join('');
   }
 
 
@@ -1465,6 +1688,60 @@ document.addEventListener('DOMContentLoaded', () => {
     const div = document.createElement('div');
     div.textContent = String(value ?? '');
     return div.innerHTML;
+  }
+
+  /**
+   * Decode HTML entities (e.g. &#39; → ') that Gmail puts in snippets,
+   * then safely re-escape so the result is safe to insert into innerHTML.
+   */
+  function decodeHtml(value) {
+    const ta = document.createElement('textarea');
+    ta.innerHTML = String(value ?? '');
+    return ta.value;
+  }
+
+  function safeSnippet(value) {
+    return escapeHtml(decodeHtml(value));
+  }
+
+  /**
+   * Safely render plain-text email body: escape HTML, linkify URLs, and
+   * convert newlines to <br> so the message displays with proper formatting.
+   * Also strips MSO/Outlook conditional comment artifacts (<!--[if !mso]><!-->
+   * etc.) that the server-side HTML parser lets through into extracted text.
+   */
+  function linkifyText(value) {
+    // 0. Strip MSO/Outlook conditional comment markers BEFORE HTML-escaping.
+    //    These leak into the plain-text body as literal strings like:
+    //      <!--[if !mso]><!-->   <!--[if false]><!-->   <!--<![endif]-->
+    //    Fixing here means already-cached bodies in state.fullMessages are
+    //    cleaned immediately, with no server restart required.
+    let text = String(value ?? '');
+    // Full conditional blocks: <!--[if ...]>...<![endif]-->
+    text = text.replace(/<!--\[if[^\]]*\]>[\s\S]*?<!\[endif\]-->/gi, '');
+    // Opening markers: <!--[if ...]><!-->  or  <!--[if ...]>
+    text = text.replace(/<!--\[if[^\]]*\]><!-->/gi, '');
+    text = text.replace(/<!--\[if[^\]]*\]>/gi, '');
+    // Closing markers: <!--<![endif]-->  and  <!--[endif]-->
+    text = text.replace(/<!--<!\[endif\]-->/gi, '');
+    text = text.replace(/<!--\[endif\]-->/gi, '');
+    // Bare empty comment shorthand: <!-->
+    text = text.replace(/<!-{2,}>/g, '');
+
+    // 1. Escape all HTML entities
+    const escaped = escapeHtml(text);
+    // 2. Linkify angle-bracket wrapped URLs: &lt;https://...&gt;
+    const withAngle = escaped.replace(
+      /&lt;(https?:\/\/[^\s&>]+?)&gt;/gi,
+      (_, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer" class="email-link">${url}</a>`
+    );
+    // 3. Linkify remaining bare URLs not already inside an <a> tag
+    const withLinks = withAngle.replace(
+      /(?<![">/])(https?:\/\/[^\s<>"')\]]+)/gi,
+      url => `<a href="${url}" target="_blank" rel="noopener noreferrer" class="email-link">${url}</a>`
+    );
+    // 4. Convert newlines to <br> for readable paragraph layout
+    return withLinks.replace(/\n/g, '<br>');
   }
 
   function conciseActionTitle(value) {
@@ -1585,6 +1862,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!start) return null;
     const end = allDay ? addDays(start, 1) : new Date(start.getTime() + 20 * 60000);
 
+    const sourceId = attentionSourceId(item);
     return {
       id: `deadline-${item.source_message_id || item.id || index}`,
       title: item.subject || item.title || conciseActionTitle(item.description) || 'Email deadline',
@@ -1593,7 +1871,10 @@ document.addEventListener('DOMContentLoaded', () => {
       end: allDay ? toLocalDateInput(end) : end.toISOString(),
       all_day: allDay,
       source: 'deadline',
+      blocking: false,
       conflict: false,
+      conflict_with: [],
+      marker: sourceId ? `gmail-${sourceId}` : '',
       deadline_label: raw
     };
   }
@@ -1623,48 +1904,13 @@ document.addEventListener('DOMContentLoaded', () => {
       .map(deadlineToCalendarItem)
       .filter(Boolean);
 
-    // Deduplicate calendar events by ID
-    const seenIds = new Set();
-    const uniqueCalEvents = [];
-    for (const ev of state.calendarEvents) {
-      const eid = String(ev.id || '');
-      if (eid && seenIds.has(eid)) continue;
-      if (eid) seenIds.add(eid);
-      uniqueCalEvents.push(ev);
-    }
-
-    return [...uniqueCalEvents, ...deadlines];
+    return window.CalendarConflicts.deduplicate([...state.calendarEvents, ...deadlines]);
   }
 
   function localConflictPass(events) {
-    (events || []).forEach(e => {
-      e.conflict = false;
-      e.conflict_with = [];
-    });
-
-    // Deadlines (source === 'deadline') never participate in occupied-time collision detection
-    const timed = (events || [])
-      .filter(e => !e.all_day && e.source !== 'deadline')
-      .map(e => ({ event: e, start: parseEventStart(e), end: parseEventEnd(e) }))
-      .filter(x => x.start && x.end);
-
-    for (let i = 0; i < timed.length; i += 1) {
-      for (let j = i + 1; j < timed.length; j += 1) {
-        const a = timed[i];
-        const b = timed[j];
-        if (a.start < b.end && b.start < a.end) {
-          a.event.conflict = true;
-          b.event.conflict = true;
-          if (!a.event.conflict_with.some(x => x.id === b.event.id)) {
-            a.event.conflict_with.push({ id: b.event.id, title: b.event.title });
-          }
-          if (!b.event.conflict_with.some(x => x.id === a.event.id)) {
-            b.event.conflict_with.push({ id: a.event.id, title: a.event.title });
-          }
-        }
-      }
-    }
-    return events;
+    const result = window.CalendarConflicts.annotate(events || []);
+    state.calendarConflictPairs = result.pairs;
+    return result.events;
   }
 
   function initCalendarControls() {
@@ -1726,6 +1972,7 @@ document.addEventListener('DOMContentLoaded', () => {
       window.Kyle?.setContext({
         ...(state.data || {}),
         calendarEvents: state.calendarEvents,
+        workJobs: workJobs,
         health: state.health,
         currentPage: state.currentPage
       });
@@ -1740,12 +1987,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  function startInboxAutoSync() {
+    if (state.inboxSyncTimer) clearInterval(state.inboxSyncTimer);
+    state.inboxSyncTimer = setInterval(() => {
+      if (document.hidden) return;
+      if (!['overview', 'inbox'].includes(state.currentPage)) return;
+      loadInbox(false);
+    }, 10000);
+  }
+
   function startCalendarAutoSync() {
     if (state.calendarSyncTimer) clearInterval(state.calendarSyncTimer);
-    // Google -> Agent Harness: refresh once a minute while the page is open.
+    // Google Calendar is authoritative; refresh often enough to remove externally deleted events quickly.
     state.calendarSyncTimer = setInterval(() => {
       if (!document.hidden) refreshCalendar(false);
-    }, 60000);
+    }, 10000);
 
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) refreshCalendar(false);
@@ -1758,13 +2014,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const allDay = $('calendarAllDay');
     if (!grid || !allDay) return;
 
+    const previousScrollTop = grid.scrollTop;
+    const hadTimeline = grid.dataset.rendered === 'true';
     const { start: weekStart, end: weekEnd } = calendarRange();
-    const weekItems = combinedCalendarItems().filter(event => {
+    const visibleItems = combinedCalendarItems().filter(event => {
       const start = parseEventStart(event);
       const end = parseEventEnd(event) || start;
       return start && end && start < weekEnd && end >= weekStart;
     });
-    localConflictPass(weekItems);
+    const weekItems = localConflictPass(visibleItems);
 
     const rangeLabel = $('calendarRangeLabel');
     if (rangeLabel) {
@@ -1774,12 +2032,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     renderAllDayRow(allDay, weekStart, weekItems);
     renderTimedGrid(grid, weekStart, weekItems);
-    renderConflictAlert(weekItems);
+    renderConflictAlert();
+    grid.dataset.rendered = 'true';
+    requestAnimationFrame(() => {
+      grid.scrollTop = hadTimeline ? previousScrollTop : 7 * 56;
+    });
   }
 
   function renderAllDayRow(container, weekStart, items) {
     const today = new Date();
-    let html = '<div class="calendar-all-day-label">all-day</div>';
+    let html = '<div class="calendar-all-day-label">all-day / deadlines</div>';
 
     for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
       const day = addDays(weekStart, dayIndex);
@@ -1827,12 +2089,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderTimedGrid(container, weekStart, items) {
-    const visibleTimed = items
-      .filter(event => !event.all_day)
-      .map(event => parseEventStart(event))
-      .filter(Boolean);
-    const earliestHour = visibleTimed.length ? Math.min(...visibleTimed.map(d => d.getHours())) : 7;
-    const START_HOUR = Math.max(0, Math.min(7, earliestHour));
+    const START_HOUR = 0;
     const END_HOUR = 24;
     const HOUR_HEIGHT = 56;
     const today = new Date();
@@ -1861,7 +2118,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const start = parseEventStart(event);
         const end = parseEventEnd(event) || new Date(start.getTime() + 30 * 60000);
         const startMinutes = start.getHours() * 60 + start.getMinutes();
-        const endMinutes = end.getHours() * 60 + end.getMinutes();
+        const crossesDay = end.toDateString() !== start.toDateString() || end <= start;
+        const endMinutes = crossesDay ? END_HOUR * 60 : end.getHours() * 60 + end.getMinutes();
         const visibleStart = Math.max(START_HOUR * 60, startMinutes);
         const visibleEnd = Math.min(END_HOUR * 60, Math.max(endMinutes, visibleStart + 15));
         if (visibleEnd <= START_HOUR * 60 || visibleStart >= END_HOUR * 60) return;
@@ -1928,15 +2186,14 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function renderConflictAlert(items) {
+  function renderConflictAlert() {
     const alert = $('calendarConflictAlert');
     const text = $('calendarConflictText');
     if (!alert || !text) return;
-    const conflicts = (items || []).filter(item => item.conflict && item.source !== 'deadline');
-    const uniqueIds = new Set(conflicts.map(c => c.id));
-    const pairCount = Math.max(1, Math.floor(uniqueIds.size / 2));
-    alert.hidden = conflicts.length === 0;
-    if (conflicts.length) {
+    const pairCount = state.calendarConflictPairs.length;
+    alert.hidden = pairCount === 0;
+    alert.style.display = pairCount === 0 ? 'none' : '';
+    if (pairCount) {
       text.textContent = `${pairCount} schedule clash${pairCount === 1 ? '' : 'es'} this week. Conflicting events are highlighted in red.`;
     }
   }
@@ -2022,30 +2279,18 @@ document.addEventListener('DOMContentLoaded', () => {
   async function deleteSelectedCalendarEvent() {
     const id = $('calendarEventId').value;
     if (!id) return;
-    if (!window.confirm('Delete this Google Calendar event?')) return;
-
-    const response = await fetch(`${API_BASE}/api/calendar/events/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    const detail = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      addError(detail.error || `Calendar delete returned ${response.status}`);
+    const selected = state.calendarEvents.find(item => String(item.id) === String(id));
+    const reference = { type: 'calendar-event', id: String(id), label: selected?.title || 'Calendar event' };
+    closeCalendarModal();
+    if (window.KyleExecutor) {
+      await window.KyleExecutor.execute({
+        id: `calendar_delete_${Date.now().toString(36)}`,
+        goal: `Delete ${reference.label}`,
+        steps: [{ tool: 'calendar.delete_prepare', args: { references: [reference] } }]
+      });
       return;
     }
-
-    const marker = detail.dismissed_marker || detail.marker;
-    if (marker) {
-      state.calendarDismissedMarkers.add(marker);
-      if (state.data) state.data.calendar_dismissed_markers = [...state.calendarDismissedMarkers];
-      saveSessionSnapshot(state.data);
-    }
-
-    // Remove it immediately so an older in-flight calendar GET cannot make the
-    // deleted event appear to flash back into the UI.
-    state.calendarEvents = state.calendarEvents.filter(item => String(item.id) !== String(id));
-    state.calendarSelectedEventId = null;
-    closeCalendarModal();
-    renderCalendar();
-    await refreshCalendar(true);
-    window.dispatchEvent(new CustomEvent('harness:calendar-changed'));
+    addError('Calendar deletion confirmation is unavailable. Reload Mailmate and try again.');
   }
 
   async function createCalendarEvent(payload) {
@@ -2088,6 +2333,223 @@ document.addEventListener('DOMContentLoaded', () => {
     return true;
   }
 
+  async function dismissCalendarDeadline(marker) {
+    if (!marker) throw new Error('Deadline marker is missing');
+    const response = await fetch(`${API_BASE}/api/calendar/deadlines/dismiss`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ marker })
+    });
+    const detail = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(detail.error || `Deadline dismissal returned ${response.status}`);
+    state.calendarDismissedMarkers.add(marker);
+    if (state.data) state.data.calendar_dismissed_markers = [...state.calendarDismissedMarkers];
+    saveSessionSnapshot(state.data);
+    renderCalendar();
+    return detail;
+  }
+
+  function automationScheduleLabel(schedule = {}) {
+    const type = schedule.type || 'daily';
+    if (type === 'interval') return `Every ${schedule.minutes || 60} minutes`;
+    if (type === 'once') return `Once · ${formatAutomationDate(schedule.at)}`;
+    const [hour = '08', minute = '00'] = String(schedule.time || '08:00').split(':');
+    const time = new Date(2000, 0, 1, Number(hour), Number(minute)).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    if (type === 'weekly') {
+      const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+      return `Every ${days[Number(schedule.weekday || 0)]} · ${time}`;
+    }
+    return `Every day · ${time}`;
+  }
+
+  function formatAutomationDate(value) {
+    if (!value) return 'Not scheduled';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'Not scheduled';
+    return date.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  }
+
+  async function loadAutomations() {
+    try {
+      const response = await fetch(`${API_BASE}/api/automations`);
+      if (!response.ok) throw new Error(`Automations returned ${response.status}`);
+      state.automations = await response.json();
+      renderAutomations();
+      return state.automations;
+    } catch (error) {
+      const list = $('automationList');
+      if (list) list.innerHTML = `<p class="automation-empty">${escapeHtml(error.message)}</p>`;
+      return [];
+    }
+  }
+
+  function renderAutomations() {
+    const list = $('automationList');
+    if (!list) return;
+    if (!state.automations.length) {
+      list.innerHTML = '<p class="automation-empty">No scheduled runs yet. Create one to have Kyle check your workspace automatically.</p>';
+      return;
+    }
+    list.innerHTML = state.automations.map(automation => `
+      <article class="automation-row" data-automation-id="${escapeHtml(automation.id)}" data-kyle-type="automation" data-kyle-id="${escapeHtml(automation.id)}" data-kyle-label="${escapeHtml(automation.name)}">
+        <div>
+          <small>${escapeHtml(automationScheduleLabel(automation.schedule))}</small>
+          <h2>${escapeHtml(automation.name)}</h2>
+          <p>${escapeHtml(automation.action?.goal || '')}</p>
+          <div class="automation-meta"><span>Last: ${escapeHtml(formatAutomationDate(automation.last_run))}</span><span>Next: ${escapeHtml(formatAutomationDate(automation.next_run))}</span></div>
+        </div>
+        <dl class="automation-rule">
+          <div><dt>When</dt><dd>${escapeHtml(automationScheduleLabel(automation.schedule))}</dd></div>
+          <div><dt>Kyle does</dt><dd>${escapeHtml(automation.action?.goal || '')}</dd></div>
+          <div><dt>Output</dt><dd>Create a Work summary</dd></div>
+        </dl>
+        <div class="automation-controls">
+          <button class="icon-btn plain-icon automation-run" type="button" title="Run now" aria-label="Run now"><i class="fas fa-play"></i></button>
+          <button class="icon-btn plain-icon automation-edit" type="button" title="Edit" aria-label="Edit automation"><i class="fas fa-pen"></i></button>
+          <label class="switch" title="${automation.enabled ? 'Disable' : 'Enable'} ${escapeHtml(automation.name)}"><input class="automation-toggle" type="checkbox" ${automation.enabled ? 'checked' : ''}><span></span></label>
+        </div>
+      </article>
+    `).join('');
+
+    list.querySelectorAll('.automation-row').forEach(row => {
+      const automation = state.automations.find(item => item.id === row.dataset.automationId);
+      if (!automation) return;
+      window.MailmateObjects?.register({ type: 'automation', id: automation.id, label: automation.name, page: 'automations' }, row);
+      row.querySelector('.automation-edit')?.addEventListener('click', () => openAutomationModal(automation));
+      row.querySelector('.automation-run')?.addEventListener('click', async event => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        await fetch(`${API_BASE}/api/automations/${encodeURIComponent(automation.id)}/run`, { method: 'POST' });
+        await loadAutomations();
+        setTimeout(() => renderWork(state.data), 350);
+      });
+      row.querySelector('.automation-toggle')?.addEventListener('change', async event => {
+        await updateAutomation(automation.id, { enabled: event.target.checked });
+      });
+    });
+  }
+
+  function updateAutomationScheduleFields() {
+    const type = $('automationScheduleType')?.value || 'daily';
+    $('automationTimeField').hidden = !['daily', 'weekly'].includes(type);
+    $('automationWeekdayField').hidden = type !== 'weekly';
+    $('automationOnceField').hidden = type !== 'once';
+    $('automationIntervalField').hidden = type !== 'interval';
+  }
+
+  function openAutomationModal(automation = null) {
+    const modal = $('automationModal');
+    if (!modal) return;
+    const schedule = automation?.schedule || { type: 'daily', time: '08:00', timezone: 'Asia/Kolkata' };
+    $('automationModalTitle').textContent = automation ? 'Edit automation' : 'New automation';
+    $('automationId').value = automation?.id || '';
+    $('automationName').value = automation?.name || '';
+    $('automationGoal').value = automation?.action?.goal || '';
+    $('automationScheduleType').value = schedule.type || 'daily';
+    $('automationTime').value = schedule.time || '08:00';
+    $('automationWeekday').value = String(schedule.weekday ?? 0);
+    $('automationIntervalMinutes').value = String(schedule.minutes || 240);
+    if (schedule.at) {
+      const at = new Date(schedule.at);
+      const local = new Date(at.getTime() - at.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      $('automationOnceAt').value = local;
+    } else {
+      $('automationOnceAt').value = '';
+    }
+    $('automationDeleteBtn').hidden = !automation;
+    updateAutomationScheduleFields();
+    modal.hidden = false;
+    setTimeout(() => $('automationName')?.focus(), 20);
+  }
+
+  function closeAutomationModal() {
+    const modal = $('automationModal');
+    if (modal) modal.hidden = true;
+  }
+
+  function automationPayload() {
+    const type = $('automationScheduleType').value;
+    const schedule = { type, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata' };
+    if (type === 'daily') schedule.time = $('automationTime').value || '08:00';
+    if (type === 'weekly') {
+      schedule.time = $('automationTime').value || '08:00';
+      schedule.weekday = Number($('automationWeekday').value || 0);
+    }
+    if (type === 'once') schedule.at = new Date($('automationOnceAt').value).toISOString();
+    if (type === 'interval') schedule.minutes = Number($('automationIntervalMinutes').value || 240);
+    return {
+      name: $('automationName').value.trim(),
+      schedule,
+      action: { type: 'kyle_goal', goal: $('automationGoal').value.trim() },
+      output: { type: 'work_summary' }
+    };
+  }
+
+  async function updateAutomation(id, payload) {
+    const response = await fetch(`${API_BASE}/api/automations/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error(`Automation update returned ${response.status}`);
+    await loadAutomations();
+    return response.json().catch(() => ({}));
+  }
+
+  function initAutomationControls() {
+    $('newAutomationBtn')?.addEventListener('click', () => openAutomationModal());
+    $('automationScheduleType')?.addEventListener('change', updateAutomationScheduleFields);
+    $('automationModalClose')?.addEventListener('click', closeAutomationModal);
+    $('automationCancelBtn')?.addEventListener('click', closeAutomationModal);
+    $('automationModal')?.addEventListener('click', event => {
+      if (event.target === $('automationModal')) closeAutomationModal();
+    });
+    $('automationForm')?.addEventListener('submit', async event => {
+      event.preventDefault();
+      let payload;
+      try {
+        payload = automationPayload();
+      } catch (_) {
+        addError('Automation: choose a valid future date and time.');
+        return;
+      }
+      const id = $('automationId').value;
+      const response = await fetch(id ? `${API_BASE}/api/automations/${encodeURIComponent(id)}` : `${API_BASE}/api/automations`, {
+        method: id ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        addError(`Automation: ${detail.error || response.statusText}`);
+        return;
+      }
+      closeAutomationModal();
+      await loadAutomations();
+    });
+    $('automationDeleteBtn')?.addEventListener('click', async () => {
+      const id = $('automationId').value;
+      if (!id || !window.confirm('Delete this scheduled Kyle run?')) return;
+      await fetch(`${API_BASE}/api/automations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      closeAutomationModal();
+      await loadAutomations();
+    });
+  }
+
+  window.AgentAutomations = {
+    list: () => [...state.automations],
+    refresh: loadAutomations,
+    open: () => showTab('automations'),
+    runNow: async id => {
+      const response = await fetch(`${API_BASE}/api/automations/${encodeURIComponent(id)}/run`, { method: 'POST' });
+      if (!response.ok) throw new Error(`Automation run returned ${response.status}`);
+      await loadAutomations();
+      return response.json();
+    },
+    setEnabled: (id, enabled) => updateAutomation(id, { enabled })
+  };
+
   window.AgentCalendar = {
     refresh: () => refreshCalendar(true),
     createEvent: createCalendarEvent,
@@ -2096,6 +2558,38 @@ document.addEventListener('DOMContentLoaded', () => {
     getSelectedEvent: () => state.calendarEvents.find(event => event.id === state.calendarSelectedEventId) || null,
     getSelectedEventId: () => state.calendarSelectedEventId,
     getEvents: () => [...state.calendarEvents],
+    getVisibleEvents: () => combinedCalendarItems(),
+    dismissDeadline: dismissCalendarDeadline,
     open: () => showTab('calendar')
+  };
+
+  window.AgentMail = {
+    getSelectedEmail: () => {
+      if (!state.selectedEmailId) return null;
+      const selected = state.data?.emails?.find(email => emailKey(email) === state.selectedEmailId);
+      if (!selected) return null;
+      return { ...selected, ...(state.fullMessages.get(emailKey(selected)) || {}) };
+    },
+    getEmails: () => [...(state.data?.emails || [])],
+    findContact: query => {
+      const q = String(query || '').toLowerCase().trim();
+      if (!q) return [];
+      const contacts = new Map();
+      (state.data?.emails || []).forEach(e => {
+        const raw = e.sender || '';
+        const match = raw.match(/^(.*?)\s*<(.+?)>$/);
+        const name = match ? match[1].replace(/["']/g, '').trim() : raw;
+        const email = match ? match[2].trim() : raw;
+        if (email && email.includes('@')) {
+          const key = email.toLowerCase();
+          if (!contacts.has(key)) {
+            contacts.set(key, { name: name || key.split('@')[0], email, full: raw });
+          }
+        }
+      });
+      return [...contacts.values()].filter(c => c.name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q));
+    },
+    openEmail: openEmail,
+    refresh: () => loadDashboard(true)
   };
 });

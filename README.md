@@ -1,8 +1,8 @@
-# Mailmate - Team CIPHERSQUAD
+﻿# Mailmate - Team CIPHERSQUAD
 
 Mailmate is a proactive Gmail intelligence & autonomous work preparation workspace built for Code2Create 7.0.
 
-> **“Mailmate displays user-authorized Gmail data transiently, but does not centrally retain mailbox content. Before any AI or autonomous processing, a local privacy gate blocks sensitive and irrelevant messages and passes only the minimum required context.”**
+> **â€œMailmate displays user-authorized Gmail data transiently, but does not centrally retain mailbox content. Before any AI or autonomous processing, a local privacy gate blocks sensitive and irrelevant messages and passes only the minimum required context.â€**
 
 ---
 
@@ -12,38 +12,38 @@ Mailmate enforces a strict boundary between user email viewing and machine intel
 
 ```text
                          Gmail
-                           │
-                           ▼
-                 ┌──────────────────┐
-                 │ DISPLAY PLANE    │
-                 │                  │
-                 │ All authorized   │
-                 │ Gmail content    │
-                 │ can be shown     │
-                 │ in browser RAM   │
-                 └────────┬─────────┘
-                          │
+                           â”‚
+                           â–¼
+                 â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                 â”‚ DISPLAY PLANE    â”‚
+                 â”‚                  â”‚
+                 â”‚ All authorized   â”‚
+                 â”‚ Gmail content    â”‚
+                 â”‚ can be shown     â”‚
+                 â”‚ in browser RAM   â”‚
+                 â””â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                          â”‚
                     Privacy Gate
-                          │
+                          â”‚
                 only required + safe
-                          ▼
-                 ┌──────────────────┐
-                 │ AI / WORK PLANE  │
-                 │                  │
-                 │ Kyle             │
-                 │ LM Studio        │
-                 │ Gemini fallback  │
-                 │ Work Agent       │
-                 │ Auto-drafts      │
-                 └──────────────────┘
+                          â–¼
+                 â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                 â”‚ AI / WORK PLANE  â”‚
+                 â”‚                  â”‚
+                 â”‚ Kyle             â”‚
+                 â”‚ LM Studio        â”‚
+                 â”‚ Gemini fallback  â”‚
+                 â”‚ Work Agent       â”‚
+                 â”‚ Auto-drafts      â”‚
+                 â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 ### Boundary Enforcement Rules
-- `Gmail → browser`: Allowed display (transient in browser RAM only; no emails hidden from user).
-- `Gmail → disk/database`: **Prohibited** (zero central mailbox retention; only minimal derived task state is stored).
-- `Gmail → AI / Gemini / LM Studio`: **Gate required** (sensitive, financial, and security emails blocked).
-- `Gmail → Work Agent`: **Gate required** (only actionable academic/work tasks qualify).
-- `Gmail → auto-send`: **Gate + AutoSendPolicy required** (routine acknowledgements only, 20s cancelable countdown).
+- `Gmail â†’ browser`: Allowed display (transient in browser RAM only; no emails hidden from user).
+- `Gmail â†’ disk/database`: **Prohibited** (zero central mailbox retention; only minimal derived task state is stored).
+- `Gmail â†’ AI / Gemini / LM Studio`: **Gate required** (sensitive, financial, and security emails blocked).
+- `Gmail â†’ Work Agent`: **Gate required** (only actionable academic/work tasks qualify).
+- `Gmail â†’ auto-send`: **Gate + AutoSendPolicy required** (routine acknowledgements only, 20s cancelable countdown).
 
 ---
 
@@ -54,14 +54,15 @@ Mailmate enforces a strict boundary between user email viewing and machine intel
 - **Deterministic Local Privacy Gate**: Screens out banking, OTPs, and personal records before AI
 - **Proactive Work Agent**: Autonomously prepares checklists (`.md`, `.docx`) and response drafts
 - **Autopilot Safety Engine (`AutoSendPolicy`)**: 20-second cancelable auto-send countdown for routine acknowledgements only
-- **Local CUDA-Accelerated Whisper STT & Kyle Browser Voice Assistant**
+- **Kyle Browser Voice Assistant** with native browser speech input and speech synthesis
+- **Persistent Kyle Automations** with once, daily, weekly, and interval schedules; every run is recorded in Work
 - **Overview, Inbox, Work, Calendar, Automations, Status, Integrations, and Settings views**
 
 ---
 
 ## Requirements
 
-- Python 3.10 or newer & Node.js 18 or newer
+- Python 3.10 or newer
 - A Google Cloud project with Gmail API and Google Calendar API enabled
 - A Google OAuth 2.0 Web application client
 - A Gemini API key
@@ -117,25 +118,20 @@ GMAIL_FETCH_LIMIT=20
 GMAIL_QUERY=newer_than:30d
 ```
 
-Recommended for shared persistence (derived state only):
-
-```env
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_PUBLISHABLE_KEY=your_supabase_publishable_key
-SUPABASE_SECRET_KEY=your_supabase_service_role_key
-SUPABASE_JWKS_URL=https://your-project.supabase.co/auth/v1/.well-known/jwks.json
-OAUTH_TOKEN_ENCRYPTION_KEY=64_hex_characters_or_base64_32_byte_key
-```
-
-Run [`SUPABASE_PRIVACY_MIGRATION.sql`](./SUPABASE_PRIVACY_MIGRATION.sql) after deploying the privacy changes. It removes legacy email body/snippet columns and plaintext OAuth token columns; users must reconnect Google afterward. The backend fetches full Gmail content only for transient analysis or an explicit message-detail request, and stores only email metadata plus derived results.
 
 ---
 
 ## Kyle Voice Assistant
 
-- Local speech-to-text via CUDA-accelerated `faster-whisper` (`small` model).
-- Automatic fallback to browser `webkitSpeechRecognition`.
-- Kyle's voice responses spoken via browser speech synthesis.
+- Speech-to-text uses the browser's built-in `SpeechRecognition` / `webkitSpeechRecognition` support.
+- Kyle's voice responses use browser speech synthesis, so ElevenLabs is not required for local testing.
+- Calendar deletions always show the exact event or grouped event list before Kyle makes the change.
+
+---
+
+## Automations
+
+Create an automation from the Automations view and choose a once, daily, weekly, or interval schedule. Schedules are stored locally in `data/automations.json`, restored after restarts, and run in the background while Mailmate is open. Each run creates a visible Work record with progress steps and its final summary.
 
 ---
 
@@ -144,3 +140,4 @@ Run [`SUPABASE_PRIVACY_MIGRATION.sql`](./SUPABASE_PRIVACY_MIGRATION.sql) after d
 - **Google access blocked:** Add the Gmail account as an OAuth test user or publish the consent screen.
 - **Insufficient Permissions / 403 on Drafts:** Reconnect Google at `http://localhost:5000/auth/google` to grant `gmail.modify` permissions. Older tokens may contain only `gmail.readonly`.
 - **Kyle voice input:** Ensure microphone permissions are granted in Chrome.
+

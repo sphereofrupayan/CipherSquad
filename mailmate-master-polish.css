@@ -1,0 +1,71 @@
+/* Final Mailmate UX polish */
+.kyle-floating-mount { right: 24px !important; bottom: 22px !important; z-index: 1900 !important; }
+.kyle-shell {
+  width: 72px !important; height: 72px !important; padding: 6px !important;
+  border-radius: 999px !important; border: 1px solid rgba(255,255,255,.13) !important;
+  background: rgba(19,19,18,.94) !important;
+  box-shadow: 0 18px 50px rgba(0,0,0,.24), 0 1px 0 rgba(255,255,255,.06) inset !important;
+  transform-origin: 100% 50%;
+  transition: width 220ms cubic-bezier(.16,1,.3,1), box-shadow 180ms ease !important;
+}
+.kyle-widget:hover .kyle-shell,
+.kyle-widget:focus-within .kyle-shell,
+.kyle-widget.is-expanded .kyle-shell,
+.kyle-widget:not([data-state="IDLE"]) .kyle-shell { width: min(382px, calc(100vw - 44px)) !important; }
+.kyle-orb { width: 60px !important; height: 60px !important; flex-basis: 60px !important; }
+.orb-visual {
+  box-shadow: inset 0 0 20px rgba(255,255,255,.34), 0 0 0 1px rgba(255,255,255,.16), 0 10px 24px rgba(0,0,0,.18) !important;
+  transition: transform 90ms linear, box-shadow 200ms ease, opacity 180ms ease !important;
+}
+.kyle-widget[data-state="THINKING"] .orb-visual { animation: mailmateThink 1100ms ease-in-out infinite alternate; }
+.kyle-widget[data-state="ACTING"] .orb-visual,
+.kyle-widget[data-state="OBSERVING"] .orb-visual { animation: mailmateWork 980ms ease-in-out infinite alternate !important; }
+.kyle-widget[data-state="WAITING_APPROVAL"] .orb-visual {
+  box-shadow: inset 0 0 20px rgba(255,255,255,.42), 0 0 0 2px rgba(217,158,63,.56), 0 12px 30px rgba(0,0,0,.2) !important;
+}
+.kyle-action-panel {
+  right: 24px !important; bottom: 104px !important; width: min(410px, calc(100vw - 32px)) !important;
+  max-height: min(530px, calc(100vh - 132px)) !important; border: 1px solid rgba(255,255,255,.11) !important;
+  border-radius: 18px !important; overflow: hidden !important; background: rgba(20,20,19,.965) !important;
+  box-shadow: 0 26px 70px rgba(0,0,0,.32), 0 1px 0 rgba(255,255,255,.05) inset !important;
+  transform-origin: 100% 100% !important; transform: translateY(12px) scale(.965) !important; opacity: 0 !important;
+  transition: opacity 170ms ease, transform 220ms cubic-bezier(.16,1,.3,1) !important;
+}
+.kyle-action-panel.is-open { opacity: 1 !important; transform: translateY(0) scale(1) !important; }
+.kyle-panel-header { min-height: 58px; padding: 13px 14px 11px !important; border-bottom: 1px solid rgba(255,255,255,.075) !important; }
+.kyle-panel-mic-btn { display: none !important; }
+.kyle-panel-btn { width: 30px !important; height: 30px !important; border-radius: 9px !important; }
+.kyle-panel-body { padding: 13px 14px !important; max-height: 370px !important; }
+.kyle-composer-input, .kyle-composer-textarea { border-radius: 10px !important; border-color: rgba(255,255,255,.085) !important; background: rgba(255,255,255,.038) !important; }
+.kyle-composer-textarea { min-height: 130px !important; }
+.kyle-panel-footer { padding: 11px 14px !important; background: rgba(0,0,0,.16) !important; }
+.kyle-btn { min-height: 34px; padding: 7px 13px !important; border-radius: 9px !important; }
+.kyle-hud-step { padding: 8px 9px !important; border-radius: 10px !important; background: rgba(255,255,255,.035) !important; animation: mailmateStepIn 180ms ease both; }
+.kyle-confirmation-item { border-radius: 10px !important; padding: 9px 10px !important; }
+
+.work-layout { grid-template-columns: 300px minmax(0,1fr) !important; border-radius: 14px !important; box-shadow: 0 8px 26px rgba(0,0,0,.035) !important; }
+.work-history { background: #e9e9e5 !important; padding-top: 14px !important; }
+.work-item { padding: 13px 16px !important; transition: background 150ms ease !important; }
+.work-item:hover { background: rgba(255,255,255,.66) !important; }
+.work-item.active { background: #fff !important; }
+.work-run { padding: 26px 30px 34px !important; }
+.work-prepared-card, .work-collapsible, .policy-banner, .work-reply-preview { border-radius: 11px !important; }
+
+.week-calendar { padding-bottom: 80px !important; scroll-padding-bottom: 80px !important; scrollbar-gutter: stable; }
+.calendar-time-column, .calendar-day-column { height: calc(var(--calendar-hour-height) * 24 + 80px) !important; padding-bottom: 80px !important; }
+
+.email-prefetch-indicator { display:inline-flex; align-items:center; gap:7px; margin-bottom:14px; padding:5px 8px; border-radius:999px; background:rgba(24,24,23,.045); color:var(--muted); font-size:.72rem; }
+.email-snippet-content { color: var(--soft); opacity: .82; white-space: pre-wrap; }
+
+@keyframes mailmateStepIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
+@keyframes mailmateThink { from { opacity:.82; transform:scale(.99); } to { opacity:1; transform:scale(1.015); } }
+@keyframes mailmateWork { from { opacity:.86; transform:scale(.995); } to { opacity:1; transform:scale(1.025); } }
+
+@media (max-width:720px) {
+  .kyle-floating-mount { right:14px !important; bottom:14px !important; }
+  .kyle-action-panel { right:14px !important; bottom:96px !important; width:calc(100vw - 28px) !important; }
+  .work-layout { grid-template-columns:1fr !important; }
+}
+@media (prefers-reduced-motion:reduce) {
+  .kyle-action-panel, .kyle-shell, .orb-visual, .kyle-hud-step { animation:none !important; transition:none !important; }
+}

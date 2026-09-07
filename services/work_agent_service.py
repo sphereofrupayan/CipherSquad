@@ -21,6 +21,7 @@ from services.google_service import (
 from services.auto_send_policy import AutoSendPolicy
 from services.privacy_gate import PrivacyGate
 from services.agent import AgentSession, AgentLoop, PolicyEngine, ToolRegistry, Verifier
+from services.agent.models.lmstudio import LMStudioModel, ModelTimeout, ModelUnavailable
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -41,6 +42,59 @@ def _now():
 
 def _clean(val, limit=2000):
     return re.sub(r"\s+", " ", str(val or "")).strip()[:limit]
+
+
+def _strict_newer_outbound(messages, source_msg_id):
+    # Return (source_message, newer_outbound, reason).
+    # Never scan the whole thread when the exact source cannot be identified.
+    source_msg_id = str(source_msg_id or "").strip()
+    if not source_msg_id:
+        return None, None, "missing_source_id"
+
+    source_index = -1
+    source_message = None
+    for idx, message in enumerate(messages or []):
+        current_id = str(message.get("id") or message.get("gmail_id") or "").strip()
+        if current_id == source_msg_id:
+            source_index = idx
+            source_message = message
+            break
+
+    if source_index < 0 or source_message is None:
+        return None, None, "source_not_found"
+
+    if source_message.get("direction") == "outbound" or source_message.get("is_sent_by_me"):
+        return source_message, None, "source_outbound"
+
+    for message in (messages or [])[source_index + 1:]:
+        current_id = str(message.get("id") or message.get("gmail_id") or "").strip()
+        if not current_id or current_id == source_msg_id:
+            continue
+        if message.get("direction") == "outbound" or message.get("is_sent_by_me"):
+            return source_message, message, "ok"
+
+    return source_message, None, "ok"
+
+
+def _remove_draft_artifacts(job):
+    job["artifacts"] = [
+        artifact for artifact in (job.get("artifacts") or [])
+        if artifact.get("type") != "email_draft"
+    ]
+
+
+def _append_step_once(job, step_type, label, status="done", **extra):
+    steps = job.setdefault("steps", [])
+    if steps and steps[-1].get("type") == step_type and steps[-1].get("label") == label:
+        return
+    record = {
+        "type": step_type,
+        "label": label,
+        "status": status,
+        "at": _now(),
+    }
+    record.update(extra)
+    steps.append(record)
 
 def clean_job_title(title: str, subject: str = "") -> str:
     """Transform messy or classified titles into clean, concise human-readable titles."""
@@ -163,7 +217,8 @@ class WorkAgentService:
                 "queued", "reading_context", "planning", "researching",
                 "generating", "drafting_reply", "creating_files",
                 "verifying", "preparing", "working", "waiting_approval",
-                "auto_send_countdown", "needs_input"
+                "auto_send_countdown", "needs_input",
+                "resolved_external"
             }
             changed = False
             for jid, job in list(jobs.items()):
@@ -188,18 +243,56 @@ class WorkAgentService:
                     continue
 
                 messages = thread_data["messages"]
-                # Find index of source inbound message
-                source_index = -1
-                for idx, m in enumerate(messages):
-                    if m.get("id") == source_msg_id or m.get("gmail_id") == source_msg_id:
-                        source_index = idx
-                        break
+                source_message, outbound, match_reason = _strict_newer_outbound(
+                    messages,
+                    source_msg_id
+                )
 
-                later_messages = messages[source_index + 1:] if source_index >= 0 else messages
-                outbound = next((m for m in later_messages if m.get("direction") == "outbound" or m.get("is_sent_by_me")), None)
+                if match_reason == "source_outbound":
+                    job["status"] = "ignored_outbound"
+                    job["resolution"] = "source_message_was_outbound"
+                    job["updated_at"] = _now()
+                    if "countdown" in job:
+                        job["countdown"]["cancelled"] = True
+
+                    draft_id = (job.get("output") or {}).get("gmail_draft_id")
+                    if draft_id:
+                        try:
+                            delete_gmail_draft(draft_id)
+                        except Exception as d_err:
+                            print(f"[WorkAgent] Outbound draft cleanup notice: {d_err}")
+                    job.setdefault("output", {})["gmail_draft_id"] = None
+                    _remove_draft_artifacts(job)
+                    _append_step_once(
+                        job,
+                        "ignored_outbound",
+                        "Ignored sent mail — Work only acts on inbound requests"
+                    )
+                    changed = True
+                    continue
+
+                if match_reason != "ok":
+                    if job.get("status") == "resolved_external":
+                        job["status"] = "waiting_approval"
+                        job["updated_at"] = _now()
+                        job.pop("resolved_at", None)
+                        job.pop("resolved_message_id", None)
+                        job.pop("resolution", None)
+                        job.setdefault("output", {})["gmail_draft_id"] = None
+                        _remove_draft_artifacts(job)
+                        _append_step_once(
+                            job,
+                            "reconciliation_corrected",
+                            "Previous Gmail resolution could not be verified — returned to review"
+                        )
+                        changed = True
+                    continue
 
                 if outbound:
-                    print(f"[WorkAgent] Thread {thread_id} already handled externally via Gmail (msg {outbound.get('id')}). Reconciling job {jid}...")
+                    print(
+                        f"[WorkAgent] Verified newer outbound Gmail reply on thread "
+                        f"{thread_id} (msg {outbound.get('id')}). Resolving job {jid}."
+                    )
                     job["status"] = "resolved_external"
                     job["resolved_at"] = outbound.get("date") or outbound.get("timestamp") or _now()
                     job["resolved_message_id"] = outbound.get("id")
@@ -207,34 +300,43 @@ class WorkAgentService:
                     job["updated_at"] = _now()
                     changed = True
 
-                    # Cancel auto-send countdown if running
                     if "countdown" in job:
                         job["countdown"]["cancelled"] = True
 
-                    # Clean up Mailmate's own draft if it was staged but not used
                     draft_id = (job.get("output") or {}).get("gmail_draft_id")
                     if draft_id:
                         try:
                             existing_draft = get_gmail_draft(draft_id)
                             if existing_draft:
                                 delete_gmail_draft(draft_id)
-                                job["output"]["draft_stale"] = True
-                                job["output"]["gmail_draft_id"] = None
-                            else:
-                                job["resolution"] = "manual_gmail_reply_sent_draft"
+                                job.setdefault("output", {})["draft_stale"] = True
                         except Exception as d_err:
                             print(f"[WorkAgent] Draft cleanup notice: {d_err}")
 
-                    # Append history step
-                    if "steps" not in job:
-                        job["steps"] = []
-                    job["steps"].append({
-                        "type": "resolved_external",
-                        "label": "Replied via Gmail (Handled outside Mailmate)",
-                        "status": "done",
-                        "at": _now()
-                    })
+                    job.setdefault("output", {})["gmail_draft_id"] = None
+                    _remove_draft_artifacts(job)
+                    _append_step_once(
+                        job,
+                        "resolved_external",
+                        "Verified newer reply sent manually in Gmail",
+                        resolved_message_id=outbound.get("id")
+                    )
                     reconciled.append(job)
+
+                elif job.get("status") == "resolved_external":
+                    job["status"] = "waiting_approval"
+                    job["updated_at"] = _now()
+                    job.pop("resolved_at", None)
+                    job.pop("resolved_message_id", None)
+                    job.pop("resolution", None)
+                    job.setdefault("output", {})["gmail_draft_id"] = None
+                    _remove_draft_artifacts(job)
+                    _append_step_once(
+                        job,
+                        "reconciliation_corrected",
+                        "No newer Gmail reply found — draft returned to review"
+                    )
+                    changed = True
 
             if changed:
                 self._write_jobs(jobs)
@@ -269,8 +371,76 @@ class WorkAgentService:
         return [j for j in self.list_jobs(user_id, reconcile=False) if j.get("status") == "needs_input"]
 
     def get_completed_jobs(self, user_id):
-        completed_statuses = {"sent", "approved_sent", "resolved_external", "cancelled", "failed"}
+        completed_statuses = {"sent", "approved_sent", "resolved_external", "ignored_outbound", "completed", "cancelled", "failed"}
         return [j for j in self.list_jobs(user_id, reconcile=False) if j.get("status") in completed_statuses]
+
+    def create_automation_run(self, user_id, automation):
+        automation_id = str((automation or {}).get("id") or "automation")
+        stamp = _now()
+        digest = hashlib.sha256(f"{automation_id}:{stamp}".encode("utf-8")).hexdigest()[:12]
+        job_id = f"automation_{digest}"
+        job = {
+            "id": job_id,
+            "type": "automation_run",
+            "automation_id": automation_id,
+            "user_id": user_id,
+            "title": str((automation or {}).get("name") or "Scheduled Kyle run"),
+            "clean_title": str((automation or {}).get("name") or "Scheduled Kyle run"),
+            "status": "working",
+            "created_at": stamp,
+            "updated_at": stamp,
+            "source": {
+                "kind": "automation",
+                "automation_id": automation_id,
+                "schedule": (automation or {}).get("schedule") or {},
+            },
+            "goal": ((automation or {}).get("action") or {}).get("goal") or "Check the workspace and prepare a summary.",
+            "steps": [{"type": "automation_start", "label": "Started scheduled Kyle run", "status": "done", "at": stamp}],
+            "artifacts": [],
+            "output": {},
+        }
+        with self._lock:
+            jobs = self._read_jobs()
+            jobs[job_id] = job
+            self._write_jobs(jobs)
+        return dict(job)
+
+    def add_automation_run_step(self, job_id, user_id, label, status="done", detail=None):
+        with self._lock:
+            jobs = self._read_jobs()
+            job = jobs.get(str(job_id))
+            if not job or job.get("user_id") != user_id or job.get("type") != "automation_run":
+                return None
+            step = {"type": "automation_action", "label": _clean(label, 240), "status": status, "at": _now()}
+            if detail:
+                step["detail"] = _clean(detail, 500)
+            job.setdefault("steps", []).append(step)
+            job["updated_at"] = _now()
+            self._write_jobs(jobs)
+            return dict(job)
+
+    def finish_automation_run(self, job_id, user_id, summary, checklist=None, error=None):
+        with self._lock:
+            jobs = self._read_jobs()
+            job = jobs.get(str(job_id))
+            if not job or job.get("user_id") != user_id or job.get("type") != "automation_run":
+                return None
+            job["status"] = "failed" if error else "completed"
+            job["updated_at"] = _now()
+            job["output"] = {
+                "summary": _clean(summary, 2000),
+                "checklist": [_clean(item, 240) for item in (checklist or [])[:12]],
+            }
+            if error:
+                job["output"]["error"] = _clean(error, 800)
+            _append_step_once(
+                job,
+                "automation_complete" if not error else "automation_failed",
+                "Work summary ready" if not error else "Scheduled run could not finish",
+                status="done" if not error else "error",
+            )
+            self._write_jobs(jobs)
+            return dict(job)
 
     def get_job(self, job_id, user_id):
         with self._lock:
@@ -300,7 +470,15 @@ class WorkAgentService:
                 msg_id = str(item.get("source_message_id") or "")
                 if not msg_id:
                     continue
-                email = email_map.get(msg_id) or {}
+                email = email_map.get(msg_id)
+                if not email:
+                    continue
+
+                direction = str(email.get("direction") or "").strip().lower()
+                labels = {str(label).upper() for label in (email.get("labels") or [])}
+                if direction == "outbound" or "SENT" in labels:
+                    continue
+
                 thread_id = email.get("thread_id") or msg_id
                 subject = email.get("subject") or item.get("description") or "Action Item"
                 sender = email.get("sender") or email.get("from") or "Unknown sender"
@@ -324,14 +502,19 @@ class WorkAgentService:
                         "clean_title": display_title,
                         "kind": "assignment-prep" if is_academic else "email-reply",
                         "status": "queued",
+                        "current_step": "Queued for local AI",
+                        "activity_label": "Queued for local AI",
                         "source": {
                             "type": "gmail",
                             "message_id": msg_id,
+                            "rfc_message_id": email.get("rfc_message_id") or "",
                             "thread_id": thread_id,
                             "sender": sender,
                             "subject": subject,
                             "snippet": snippet,
-                            "deadline": item.get("deadline") or ""
+                            "deadline": item.get("deadline") or "",
+                            "direction": direction,
+                            "labels": sorted(labels)
                         },
                         "steps": [
                             {"type": "read_thread", "label": f"Read email from {sender.split('<')[0].strip()}", "status": "done"},
@@ -481,24 +664,26 @@ class WorkAgentService:
                 thread_data = get_gmail_thread(thread_id)
                 if thread_data and thread_data.get("messages"):
                     msgs = thread_data["messages"]
-                    s_idx = -1
-                    for idx, m in enumerate(msgs):
-                        if m.get("id") == source_msg_id or m.get("gmail_id") == source_msg_id:
-                            s_idx = idx
-                            break
-                    later = msgs[s_idx + 1:] if s_idx >= 0 else msgs
-                    outbound = next((m for m in later if m.get("direction") == "outbound" or m.get("is_sent_by_me")), None)
+                    source_message, outbound, match_reason = _strict_newer_outbound(
+                        msgs,
+                        source_msg_id
+                    )
+                    if match_reason == "source_outbound":
+                        raise ValueError(
+                            "Refusing to reply: this Work job was created from an outbound Gmail message."
+                        )
                     if outbound:
-                        print(f"[WorkAgent] Aborting send for job {job_id}: thread {thread_id} already has outbound reply {outbound.get('id')}.")
-                        with self._lock:
-                            jobs = self._read_jobs()
-                            if job_id in jobs:
-                                jobs[job_id]["status"] = "resolved_external"
-                                jobs[job_id]["resolution"] = "manual_gmail_reply"
-                                jobs[job_id]["resolved_at"] = outbound.get("date") or _now()
-                                jobs[job_id]["resolved_message_id"] = outbound.get("id")
-                                self._write_jobs(jobs)
-                        return jobs.get(job_id) or job
+                        print(
+                            f"[WorkAgent] Aborting send for job {job_id}: verified newer "
+                            f"outbound reply {outbound.get('id')} already exists."
+                        )
+                        self.reconcile_jobs_with_gmail(user_id)
+                        return self.get_job(job_id, user_id) or job
+                    if match_reason != "ok":
+                        print(
+                            f"[WorkAgent] Could not verify source message before explicit "
+                            f"approval ({match_reason}); not inferring any previous reply."
+                        )
             except Exception as e:
                 print(f"[WorkAgent] approve_job reconciliation check notice: {e}")
 
@@ -530,6 +715,37 @@ class WorkAgentService:
 
             # Now send the exact reviewed draft
             send_res = send_gmail_draft(draft_id)
+            sent_message_id = str((send_res or {}).get("id") or "").strip()
+            sent_thread_id = str(
+                (send_res or {}).get("thread_id")
+                or source.get("thread_id")
+                or ""
+            ).strip()
+            if not sent_message_id:
+                raise RuntimeError("Gmail send returned no sent message ID.")
+
+            send_verified = False
+            if sent_thread_id:
+                for verify_attempt in range(4):
+                    try:
+                        sent_thread = get_gmail_thread(sent_thread_id)
+                        exact_sent = next(
+                            (
+                                message for message in (sent_thread or {}).get("messages", [])
+                                if str(message.get("id") or message.get("gmail_id") or "") == sent_message_id
+                                and (
+                                    message.get("direction") == "outbound"
+                                    or message.get("is_sent_by_me")
+                                )
+                            ),
+                            None,
+                        )
+                        if exact_sent:
+                            send_verified = True
+                            break
+                    except Exception as verify_err:
+                        print(f"[WorkAgent] Gmail send verification notice: {verify_err}")
+                    time.sleep(0.35 * (verify_attempt + 1))
         except Exception as exc:
             with self._lock:
                 jobs = self._read_jobs()
@@ -560,9 +776,15 @@ class WorkAgentService:
                 
                 jobs[job_id]["steps"].append({
                     "type": "email_sent",
-                    "label": f"Sent email to {job.get('source', {}).get('sender')}",
+                    "label": (
+                        f"Sent via Gmail and verified for {job.get('source', {}).get('sender')}"
+                        if send_verified
+                        else f"Sent via Gmail API to {job.get('source', {}).get('sender')} · verification pending"
+                    ),
                     "status": "done",
                     "auto_sent": auto_sent,
+                    "gmail_message_id": sent_message_id,
+                    "verified": send_verified,
                     "at": _now()
                 })
                 self._write_jobs(jobs)
@@ -579,12 +801,108 @@ class WorkAgentService:
             job["steps"] = list(session.steps)
             job["artifacts"] = list(session.artifacts)
             if step_record:
-                job["current_step"] = step_record.get("thought") or step_record.get("action") or "Working"
-                job["activity_label"] = step_record.get("action") or "Working"
+                labels = {
+                    'work.create_checklist': 'Understood request',
+                    'mail.prepare_reply': 'Drafted reply',
+                    'file.create_markdown': 'Created file',
+                    'file.create_docx': 'Created document',
+                    'file.create_pdf': 'Created PDF',
+                    'work.finish': 'Ready for review',
+                }
+                activity = labels.get(step_record.get('action'), 'Preparing work')
+                job["current_step"] = activity
+                job["activity_label"] = activity
                 job["step_index"] = session.step_count
                 job["step_count"] = session.step_count
+            job["checkpoint"] = session.to_dict()
             job["updated_at"] = _now()
             self._write_jobs(jobs)
+
+    def _set_job_activity(self, job_id, status, label):
+        with self._lock:
+            jobs = self._read_jobs()
+            job = jobs.get(job_id)
+            if not job:
+                return
+            job['status'] = status
+            job['current_step'] = label
+            job['activity_label'] = label
+            job['updated_at'] = _now()
+            self._write_jobs(jobs)
+
+    @staticmethod
+    def _complex_work_required(source):
+        text = f"{source.get('subject', '')} {source.get('snippet', '')}".lower()
+        return bool(re.search(
+            r'\b(research|compare sources|investigate|slides?|presentation|spreadsheet|codebase|debug|pdf attachment|ambiguous)\b',
+            text,
+        ))
+
+    def _run_fast_work_path(self, session, source):
+        """Prepare common email work with one model call and deterministic execution."""
+        self._set_job_activity(session.job_id, 'planning', 'Queued for local AI')
+        try:
+            plan = LMStudioModel(timeout=min(self.timeout, 25)).work_plan(source)
+        except (ModelUnavailable, ModelTimeout):
+            if session.routing == 'LOCAL_ONLY':
+                session.status = 'waiting_local_model'
+                session.summary = 'Kyle paused because local compute is temporarily unavailable. Progress is saved.'
+                return session
+            return None
+        except Exception as exc:
+            print(f'[WorkAgent] Fast WorkPlan notice ({session.job_id}): {exc}')
+            return None
+
+        self._set_job_activity(session.job_id, 'drafting_reply', 'Drafting reply')
+        registry = ToolRegistry()
+        checklist = [_clean(item, 240) for item in (plan.get('checklist') or plan.get('requirements') or [])[:6] if _clean(item, 240)]
+        if not checklist:
+            checklist = ['Review the request', 'Prepare the requested response', 'Verify details before sending']
+        session.set_checklist(checklist)
+        session.record_step('', 'work.create_checklist', {'items': checklist}, {'allowed': True}, {
+            'ok': True, 'summary': 'Requirements organized',
+        })
+
+        reply = plan.get('reply') if isinstance(plan.get('reply'), dict) else {}
+        sender_match = re.search(r'[\w.+-]+@[\w.-]+', str(source.get('sender') or ''))
+        to_email = sender_match.group(0) if sender_match else ''
+        clean_subject = re.sub(r'^(Re:\s*)+', '', source.get('subject') or 'Update', flags=re.I)
+        subject = str(reply.get('subject') or f'Re: {clean_subject}')[:180]
+        body = str(reply.get('body') or '').strip()
+        if not body:
+            return None
+        session.set_reply(body, subject=subject, to=to_email)
+        session.record_step('', 'mail.prepare_reply', {'subject': subject, 'to': to_email}, {'allowed': True}, {
+            'ok': True, 'summary': 'Reply drafted',
+        })
+
+        artifacts = list(plan.get('artifacts') or [])[:2]
+        combined = f"{source.get('subject', '')} {source.get('snippet', '')}".lower()
+        if not artifacts and re.search(r'\b(assignment|submission|report|project|da)\b', combined):
+            artifacts = [{
+                'type': 'markdown',
+                'filename': 'work_checklist.md',
+                'spec': {
+                    'title': source.get('subject') or 'Work checklist',
+                    'sections': [{'heading': 'Action items', 'content': '\n'.join(f'- [ ] {item}' for item in checklist)}],
+                },
+            }]
+        for artifact in artifacts:
+            kind = str(artifact.get('type') or 'markdown').lower()
+            if kind not in {'markdown', 'docx', 'pdf'}:
+                continue
+            filename = str(artifact.get('filename') or f'work_plan.{"md" if kind == "markdown" else kind}')
+            args = {'filename': filename, 'spec': artifact.get('spec') or {'content': '\n'.join(checklist)}}
+            action = f'file.create_{kind}'
+            observation = registry.execute(action, args, session)
+            session.record_step('', action, {'filename': filename}, {'allowed': True}, observation, 'done' if observation.get('ok') else 'error')
+
+        session.summary = _clean(plan.get('summary') or source.get('snippet') or 'Work prepared.', 1200)
+        self._set_job_activity(session.job_id, 'verifying', 'Verifying result')
+        session.status = 'finished'
+        session.finish_reason = 'fast_work_plan'
+        Verifier().finalize(session)
+        return session
 
     def _execute_job(self, job_id, user_id):
         with self._lock:
@@ -593,6 +911,8 @@ class WorkAgentService:
             if not job or job.get("status") == "cancelled":
                 return
             job["status"] = "preparing"
+            job["current_step"] = "Reading request"
+            job["activity_label"] = "Reading request"
             job["updated_at"] = _now()
             self._write_jobs(jobs)
 
@@ -627,16 +947,42 @@ class WorkAgentService:
             source_email=source,
             routing=routing,
             autonomy_level=autonomy_level,
-            max_steps=12,
+            max_steps=10,
             max_tool_failures=3,
             max_research_calls=4,
             max_generated_files=5,
             on_step=lambda s, step: self._on_session_step(job_id, s, step)
         )
 
-        # Step 3: Run Agent Loop
-        loop = AgentLoop(session)
-        final_session = loop.run()
+        # Restore the last successfully persisted agent checkpoint.
+        # This lets a paused Tailscale/LM Studio job continue instead of replaying
+        # already-completed research/file/tool actions.
+        checkpoint = job.get("checkpoint") or {}
+        if checkpoint:
+            try:
+                session.steps = list(checkpoint.get("steps") or [])
+                session.artifacts = list(checkpoint.get("artifacts") or [])
+                session.notes = list(checkpoint.get("notes") or [])
+                session.checklist = list(checkpoint.get("checklist") or [])
+                session.reply_draft = dict(checkpoint.get("reply_draft") or {})
+                session.summary = str(checkpoint.get("summary") or "")
+                counters = checkpoint.get("counters") or {}
+                session.step_count = min(int(checkpoint.get("step_count") or len(session.steps)), session.max_steps - 1)
+                session.tool_failures = int(counters.get("tool_failures") or 0)
+                session.research_calls = int(counters.get("research_calls") or 0)
+                session.generated_files = int(counters.get("generated_files") or 0)
+                session.status = "running"
+                session.finish_reason = None
+            except Exception as checkpoint_exc:
+                print(f"[WorkAgent] Checkpoint restore notice: {checkpoint_exc}")
+
+        # Step 3: Common email work uses one structured plan. Complex work keeps the bounded loop.
+        final_session = None
+        if not checkpoint and not self._complex_work_required(source):
+            final_session = self._run_fast_work_path(session, source)
+        if final_session is None:
+            loop = AgentLoop(session)
+            final_session = loop.run()
 
         # Step 4: Handle needs_input (e.g. required specific deliverable like OS PDF is missing)
         if final_session.status == "needs_input":
@@ -666,9 +1012,14 @@ class WorkAgentService:
                 jobs = self._read_jobs()
                 if job_id in jobs:
                     jobs[job_id]["status"] = "waiting_local_model"
-                    jobs[job_id]["summary"] = "Job waiting: local model unavailable. Cloud fallback prohibited by Privacy Gate."
+                    jobs[job_id]["summary"] = "Kyle paused because local compute is temporarily unavailable. Progress is saved."
                     jobs[job_id]["routing"] = routing
                     jobs[job_id]["steps"] = final_session.steps
+                    jobs[job_id]["artifacts"] = final_session.artifacts
+                    jobs[job_id]["checkpoint"] = final_session.to_dict()
+                    jobs[job_id]["pause_reason"] = "compute_unavailable"
+                    jobs[job_id]["paused_at"] = _now()
+                    jobs[job_id]["current_step"] = "Waiting for local AI · progress saved"
                     jobs[job_id]["updated_at"] = _now()
                     self._write_jobs(jobs)
             return
@@ -695,7 +1046,8 @@ class WorkAgentService:
                     to=to_email,
                     subject=reply_subject,
                     body=suggested_reply,
-                    thread_id=source.get("thread_id")
+                    thread_id=source.get("thread_id"),
+                    in_reply_to=source.get("rfc_message_id") or None,
                 )
                 draft_id = draft_res.get("id")
                 final_session.add_artifact({
@@ -743,6 +1095,23 @@ class WorkAgentService:
                         {"type": "create_files", "label": f"Created {len(final_session.artifacts)} workspace artifacts", "status": "done"},
                         {"type": "create_gmail_draft", "label": "Synced draft to Gmail", "status": "done" if draft_id else "skipped"}
                     ]
+
+                if draft_id and not any(step.get("type") == "create_gmail_draft" for step in steps):
+                    steps.append({
+                        "type": "create_gmail_draft",
+                        "label": "Synced reply draft to Gmail",
+                        "status": "done"
+                    })
+                elif (
+                    not draft_id
+                    and settings.get("create_gmail_drafts", True)
+                    and not any(step.get("type") == "create_gmail_draft" for step in steps)
+                ):
+                    steps.append({
+                        "type": "create_gmail_draft",
+                        "label": "Gmail draft could not be staged",
+                        "status": "skipped"
+                    })
 
                 if policy_verdict.get("auto_send_allowed") is True:
                     # Safe reply -> start 20s cancelable countdown
@@ -798,29 +1167,53 @@ class WorkAgentService:
                     if thread_data and thread_data.get("messages"):
                         source_msg_id = source.get("message_id")
                         msgs = thread_data["messages"]
-                        s_idx = next((i for i, m in enumerate(msgs) if m.get("id") == source_msg_id or m.get("gmail_id") == source_msg_id), -1)
-                        later = msgs[s_idx + 1:] if s_idx >= 0 else msgs
-                        outbound = next((m for m in later if m.get("direction") == "outbound" or m.get("is_sent_by_me")), None)
-                        if outbound:
-                            print(f"[WorkAgent] Auto-send aborted: user already replied manually on thread {thread_id}!")
+                        source_message, outbound, match_reason = _strict_newer_outbound(
+                            msgs,
+                            source_msg_id
+                        )
+
+                        if match_reason == "source_outbound":
                             with self._lock:
                                 jobs = self._read_jobs()
-                                if str(job_id) in jobs:
-                                    jobs[str(job_id)]["status"] = "resolved_external"
-                                    jobs[str(job_id)]["resolution"] = "manual_gmail_reply"
-                                    jobs[str(job_id)]["resolved_at"] = outbound.get("date") or _now()
-                                    jobs[str(job_id)]["resolved_message_id"] = outbound.get("id")
-                                    if "countdown" in jobs[str(job_id)]:
-                                        jobs[str(job_id)]["countdown"]["cancelled"] = True
-                                    # Clean up stale Mailmate draft if one was staged
-                                    draft_id = (jobs[str(job_id)].get("output") or {}).get("gmail_draft_id")
-                                    if draft_id:
-                                        try:
-                                            delete_gmail_draft(draft_id)
-                                            jobs[str(job_id)]["output"]["gmail_draft_id"] = None
-                                        except Exception:
-                                            pass
+                                current = jobs.get(str(job_id))
+                                if current:
+                                    current["status"] = "ignored_outbound"
+                                    current["resolution"] = "source_message_was_outbound"
+                                    current["updated_at"] = _now()
+                                    if "countdown" in current:
+                                        current["countdown"]["cancelled"] = True
+                                    _append_step_once(
+                                        current,
+                                        "ignored_outbound",
+                                        "Auto-send cancelled — source message was sent by you"
+                                    )
                                     self._write_jobs(jobs)
+                            return
+
+                        if match_reason != "ok":
+                            with self._lock:
+                                jobs = self._read_jobs()
+                                current = jobs.get(str(job_id))
+                                if current:
+                                    current["status"] = "waiting_approval"
+                                    current["updated_at"] = _now()
+                                    if "countdown" in current:
+                                        current["countdown"]["cancelled"] = True
+                                    _append_step_once(
+                                        current,
+                                        "human_approval",
+                                        "Auto-send paused — Gmail source could not be verified",
+                                        status="pending"
+                                    )
+                                    self._write_jobs(jobs)
+                            return
+
+                        if outbound:
+                            print(
+                                f"[WorkAgent] Auto-send aborted: verified newer manual "
+                                f"reply {outbound.get('id')} exists on thread {thread_id}."
+                            )
+                            self.reconcile_jobs_with_gmail(user_id)
                             return
                 except Exception as check_err:
                     print(f"[WorkAgent] Pre-send thread check error: {check_err}")

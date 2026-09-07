@@ -8,25 +8,29 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-  <link rel="stylesheet" href="./dashboard.css?v=18">
+  <link rel="stylesheet" href="./dashboard.css?v=30">
+  <link rel="stylesheet" href="/remote-worker-ui.css?v=8">
+  <link rel="stylesheet" href="/compute-ui-fix.css?v=1">
+  <link rel="stylesheet" href="./mailmate-master-polish.css?v=1">
+  <link rel="icon" type="image/png" href="./assets/images/cs_logo.png">
 </head>
 <body>
   <div class="app-shell">
     <aside class="side-rail">
       <div class="brand">
-        <img src="./assets/images/cs_logo.png" alt="CipherSquad" onerror="this.src='./assets/images/ciphersquad_logo.jpg'">
+        <img src="./assets/images/cs_logo.png" alt="MailMate" onerror="this.src='./assets/images/ciphersquad_logo.jpg'">
         <span>MailMate</span>
       </div>
       <nav class="nav-tabs" aria-label="Workspace sections">
-        <button class="nav-tab active" type="button" data-tab="overview"><i class="fas fa-table-cells-large"></i><span>Overview</span></button>
+        <button class="nav-tab active" type="button" data-tab="overview"><i class="fas fa-gauge-high"></i><span>Overview</span></button>
         <button class="nav-tab" type="button" data-tab="inbox"><i class="fas fa-inbox"></i><span>Inbox</span></button>
-        <button class="nav-tab" type="button" data-tab="work"><i class="fas fa-diagram-project"></i><span>Work</span></button>
-        <button class="nav-tab" type="button" data-tab="calendar"><i class="fas fa-calendar"></i><span>Calendar</span></button>
-        <button class="nav-tab" type="button" data-tab="automations"><i class="fas fa-bolt"></i><span>Automations</span></button>
-        <button class="nav-tab" type="button" data-tab="status"><i class="fas fa-signal"></i><span>Status</span></button>
+        <button class="nav-tab" type="button" data-tab="work"><i class="fas fa-list-check"></i><span>Work</span></button>
+        <button class="nav-tab" type="button" data-tab="calendar"><i class="fas fa-calendar-days"></i><span>Calendar</span></button>
+        <button class="nav-tab" type="button" data-tab="automations"><i class="fas fa-wand-magic-sparkles"></i><span>Automations</span></button>
+        <button class="nav-tab" type="button" data-tab="status"><i class="fas fa-chart-line"></i><span>Status</span></button>
         <span class="nav-divider"></span>
-        <button class="nav-tab" type="button" data-tab="integrations"><i class="fas fa-plug"></i><span>Integrations</span></button>
-        <button class="nav-tab" type="button" data-tab="settings"><i class="fas fa-gear"></i><span>Settings</span></button>
+        <button class="nav-tab" type="button" data-tab="integrations"><i class="fas fa-link"></i><span>Integrations</span></button>
+        <button class="nav-tab" type="button" data-tab="settings"><i class="fas fa-sliders"></i><span>Settings</span></button>
       </nav>
     </aside>
 
@@ -50,7 +54,10 @@
             <h2 id="overviewGreeting">Good evening</h2>
             <p id="summaryText">Loading your latest Gmail brief...</p>
           </div>
-          <button class="icon-btn refresh-btn" id="refreshBtn" type="button" aria-label="Refresh Gmail" title="Refresh Gmail"><i class="fas fa-arrows-rotate"></i></button>
+          <button class="refresh-pill-btn" id="refreshBtn" type="button" aria-label="Refresh Gmail" title="Refresh Gmail">
+            <i class="fas fa-arrows-rotate" id="refreshIcon"></i>
+            <span id="refreshLabel">Refresh</span>
+          </button>
         </section>
         <div class="metric-strip" aria-label="Inbox summary">
           <div><strong id="importantCount">--</strong><span>need attention</span></div>
@@ -105,7 +112,7 @@
         <div class="work-permission-banner" id="workPermissionBanner" style="display:none;background:rgba(234,179,8,0.1);border:1px solid rgba(234,179,8,0.35);border-radius:10px;padding:12px 16px;margin-bottom:16px;align-items:center;justify-content:space-between;gap:12px;">
           <div style="display:flex;align-items:center;gap:10px;font-size:0.85rem;color:#fef08a;">
             <i class="fas fa-triangle-exclamation" style="color:#eab308;font-size:1.1rem;"></i>
-            <span><strong>Google reconnection required for Gmail drafts &amp; sending</strong> — Your current Google login is read-only. Reconnect Google once to grant <code>gmail.modify</code> so Kyle can stage and send Gmail replies.</span>
+            <span><strong>Google reconnection required for Gmail drafts &amp; sending</strong> â€” Your current Google login is read-only. Reconnect Google once to grant <code>gmail.modify</code> so Kyle can stage and send Gmail replies.</span>
           </div>
           <a href="/auth/google" class="btn btn-primary" style="padding:6px 14px;font-size:0.8rem;white-space:nowrap;text-decoration:none;display:inline-flex;align-items:center;gap:6px;"><i class="fas fa-rotate"></i> Reconnect Google</a>
         </div>
@@ -121,7 +128,7 @@
               <div>
                 <h2 id="runTitle">Select a Work Task</h2>
                 <p class="work-submeta" id="workSubMeta" style="margin:4px 0 0;font-size:0.82rem;color:var(--muted);display:none;">
-                  <span id="workSourceSender">Sender</span> · <span>Gmail</span> · <span id="workDeadlineBadge" class="work-deadline-pill">Due</span>
+                  <span id="workSourceSender">Sender</span> Â· <span>Gmail</span> Â· <span id="workDeadlineBadge" class="work-deadline-pill">Due</span>
                 </p>
               </div>
               <span class="run-status badge-queued" id="workRunStatus">Idle</span>
@@ -137,17 +144,21 @@
               <!-- Top Primary Card: KYLE PREPARED (Above the fold) -->
               <div class="work-prepared-card" id="workPreparedCard" style="display:none;">
                 <div class="prepared-header">
-                  <span class="prepared-tag"><i class="fas fa-sparkles"></i> KYLE PREPARED</span>
+                  <span class="prepared-tag" id="workPreparedTag"><i class="fas fa-sparkles"></i> READY FOR REVIEW</span>
                   <small id="workDraftBadge" class="draft-badge"></small>
                 </div>
+                <p class="work-prepared-summary" id="workPreparedSummary">Kyle prepared a reply for your review.</p>
+                <button class="secondary-btn compact-btn" id="workReviewEmailBtn" type="button" title="Open the source email in Inbox">
+                  <i class="fas fa-envelope-open-text"></i> Review source email
+                </button>
 
                 <!-- Policy Verdict / Eligibility Banner -->
                 <div class="policy-banner" id="workPolicyBanner">
                   <div class="policy-banner-header">
-                    <span class="policy-badge" id="workPolicyBadge">SAFETY POLICY</span>
-                    <span class="policy-category" id="workPolicyCategory">Checking...</span>
+                    <span class="policy-badge" id="workPolicyBadge">REVIEW</span>
+                    <span class="policy-category" id="workPolicyCategory">Checking readiness...</span>
                   </div>
-                  <p class="policy-explanation" id="workPolicyExplanation">Evaluating auto-send eligibility...</p>
+                  <p class="policy-explanation" id="workPolicyExplanation">Checking the prepared reply and files.</p>
                 </div>
 
                 <!-- Auto-Send Countdown Bar (visible during countdown) -->
@@ -157,7 +168,7 @@
                       <i class="fas fa-clock fa-spin" style="color:var(--accent);"></i>
                       <strong>AUTO-SEND APPROVED BY POLICY</strong>
                     </div>
-                    <span class="countdown-timer-text" id="countdownTimerText">Sending in 20s…</span>
+                    <span class="countdown-timer-text" id="countdownTimerText">Sending in 20sâ€¦</span>
                   </div>
                   <div class="countdown-progress-track">
                     <div class="countdown-progress-bar" id="countdownProgressBar"></div>
@@ -170,7 +181,7 @@
                 </div>
 
                 <!-- Reply Editor -->
-                <div class="work-reply-box">
+                <div class="work-reply-box" id="workReplyBox">
                   <label class="reply-label" for="workReplyText">Reply Draft</label>
                   <textarea class="work-reply-preview" id="workReplyText" rows="6" placeholder="Prepared reply will appear here..."></textarea>
                   
@@ -194,7 +205,7 @@
 
                 <!-- Generated Workspace Files -->
                 <div class="work-files-box" id="workArtifactsSection">
-                  <label class="reply-label">Generated Workspace Files</label>
+                  <label class="reply-label">Files</label>
                   <div class="work-artifacts-list" id="workArtifactsList"></div>
                 </div>
               </div>
@@ -202,11 +213,11 @@
               <!-- Collapsible Secondary Sections (Below the fold) -->
               <div class="work-collapsibles-group" id="workCollapsiblesGroup" style="display:none;">
                 <!-- Collapsible 1: What Kyle did -->
-                <details class="work-collapsible" id="workStepsDetails" open>
+                <details class="work-collapsible" id="workStepsDetails">
                   <summary class="work-summary">
                     <span class="summary-left">
                       <i class="fas fa-chevron-right chevron-icon"></i>
-                      <strong id="workStepsSummaryTitle">What Kyle did (5 steps)</strong>
+                      <strong id="workStepsSummaryTitle">What Kyle did · 5 actions</strong>
                     </span>
                     <small class="summary-badge" id="workStepsStatusBadge">Complete</small>
                   </summary>
@@ -226,7 +237,7 @@
                   </summary>
                   <div class="collapsible-body">
                     <div class="work-source-card" id="workSourceCard">
-                      <p><strong id="workSourceSenderFull">Sender</strong> · <span id="workSourceSubjectFull">Subject</span></p>
+                      <p><strong id="workSourceSenderFull">Sender</strong> Â· <span id="workSourceSubjectFull">Subject</span></p>
                       <p class="source-snippet" id="workSourceSnippet" style="margin-top:6px;font-size:0.85rem;color:var(--text);"></p>
                       <small id="workSourceMeta" style="color:var(--muted);display:block;margin-top:4px;"></small>
                     </div>
@@ -252,7 +263,7 @@
           </div>
         </div>
 
-        <div class="calendar-alert" id="calendarConflictAlert" hidden>
+        <div class="calendar-alert" id="calendarConflictAlert" style="display: none;" hidden>
           <i class="fas fa-triangle-exclamation"></i>
           <span id="calendarConflictText">Schedule clash detected.</span>
         </div>
@@ -271,21 +282,10 @@
 
       <section class="tab-panel" id="tab-automations">
         <div class="page-action-row">
-          <p>Scheduled agents keep watch without reprocessing your whole inbox.</p>
-          <button class="secondary-btn" type="button"><i class="fas fa-plus"></i> New automation</button>
+          <p>Schedule Kyle to check your workspace and leave the result in Work.</p>
+          <button class="secondary-btn" id="newAutomationBtn" type="button"><i class="fas fa-plus"></i> New automation</button>
         </div>
-        <div class="automation-list" id="automationList">
-          <article class="automation-row">
-            <div><small>Every day · 8:00 AM</small><h2>Email brief</h2><p>Check recent college email for deadlines, schedule changes, and important notices.</p></div>
-            <dl><div><dt>Last run</dt><dd>Today, 8:00 AM</dd></div><div><dt>Next</dt><dd>Tomorrow, 8:00 AM</dd></div></dl>
-            <label class="switch" title="Enable email brief"><input type="checkbox" checked><span></span></label>
-          </article>
-          <article class="automation-row">
-            <div><small>Every 4 hours</small><h2>Deadline watch</h2><p>Find new deadlines, approvals, and schedule changes in cached Gmail context.</p></div>
-            <dl><div><dt>Last run</dt><dd>6:00 PM</dd></div><div><dt>Next</dt><dd>10:00 PM</dd></div></dl>
-            <label class="switch" title="Enable deadline watch"><input type="checkbox" checked><span></span></label>
-          </article>
-        </div>
+        <div class="automation-list" id="automationList"><p class="automation-empty">Loading scheduled runs...</p></div>
       </section>
 
       <section class="tab-panel" id="tab-status">
@@ -332,8 +332,10 @@
 
       <section class="tab-panel" id="tab-settings">
         <section class="settings-list">
+          <article class="settings-theme-row"><div><h2><i class="fas fa-circle-half-stroke settings-icon"></i> Appearance</h2><p>Use the light workspace by default or switch to the darker palette.</p></div><label class="switch" title="Toggle dark mode"><input type="checkbox" id="settingDarkMode"><span></span></label></article>
           <article><div><h2>Google profile</h2><p>Your signed-in name and profile picture are used in this workspace.</p></div><span>Current session</span></article>
-          <article><div><h2>Processed inbox cache</h2><p>Supabase is used first. Gmail is checked for changes only when needed, and new information replaces stale processed context.</p></div><span id="cacheSettingsStatus">Checking</span></article>
+          <article><div><h2>Mailbox retention</h2><p>Gmail remains the source of truth. Mailmate keeps message content transient and does not use a central mailbox database.</p></div><span id="cacheSettingsStatus">Checking</span></article>
+          <article><div><h2>Kyle voice & audio</h2><p>Mute or unmute Kyle's voice responses and active audio listening.</p></div><label class="switch" title="Mute or unmute Kyle voice"><input type="checkbox" id="settingKyleVoice" checked><span></span></label></article>
           <article><div><h2>Cache policy</h2><p id="cachePolicyText">Checking cache policy...</p></div><span>Automatic</span></article>
           <article class="settings-privacy-article">
             <div style="width:100%;">
@@ -345,11 +347,11 @@
                 <span class="badge-tag" style="padding:4px 8px;font-size:0.75rem;background:rgba(16,185,129,0.15);color:#10b981;border-radius:6px;"><i class="fas fa-shield-check"></i> Local Gate Active</span>
               </div>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px;">
-                <div style="padding:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;">
+                <div style="padding:12px;background:var(--surface-hover);border:1px solid var(--line);border-radius:8px;">
                   <strong style="color:var(--text);font-size:0.85rem;"><i class="fas fa-desktop" style="color:#0ea5e9;margin-right:6px;"></i> Display Plane (Browser RAM)</strong>
                   <p style="margin:6px 0 0;font-size:0.78rem;color:var(--muted);line-height:1.4;">All authorized emails are rendered in your browser so you never miss messages. Central database mailbox retention is completely prohibited.</p>
                 </div>
-                <div style="padding:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;">
+                <div style="padding:12px;background:var(--surface-hover);border:1px solid var(--line);border-radius:8px;">
                   <strong style="color:var(--text);font-size:0.85rem;"><i class="fas fa-brain" style="color:#a855f7;margin-right:6px;"></i> AI / Work Plane (Privacy Gated)</strong>
                   <p style="margin:6px 0 0;font-size:0.78rem;color:var(--muted);line-height:1.4;">A deterministic local Privacy Gate screens out financial alerts, OTPs, and sensitive emails before any model (Gemini / LM Studio) or Work Agent is called.</p>
                 </div>
@@ -389,19 +391,19 @@
                   <div style="display:flex;flex-direction:column;gap:8px;">
                     <label class="autopilot-radio-label" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:0.85rem;">
                       <input type="radio" name="autoSendMode" value="off" style="margin-top:3px;">
-                      <span><strong>Off</strong> — Kyle acts only when asked.</span>
+                      <span><strong>Off</strong> â€” Kyle acts only when asked.</span>
                     </label>
                     <label class="autopilot-radio-label" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:0.85rem;">
                       <input type="radio" name="autoSendMode" value="prepare" style="margin-top:3px;">
-                      <span><strong>Prepare only</strong> — Automatically summarize actionable mail, create checklists, research, create files, and draft replies. No sends.</span>
+                      <span><strong>Prepare only</strong> â€” Automatically summarize actionable mail, create checklists, research, create files, and draft replies. No sends.</span>
                     </label>
                     <label class="autopilot-radio-label" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:0.85rem;">
                       <input type="radio" name="autoSendMode" value="safe_replies" checked style="margin-top:3px;">
-                      <span><strong>Safe replies (Recommended)</strong> — Everything above plus routine acknowledgements auto-send after a 20s cancelable countdown. Commitments, files, and assignments wait for approval.</span>
+                      <span><strong>Safe replies (Recommended)</strong> â€” Everything above plus routine acknowledgements auto-send after a 20s cancelable countdown. Commitments, files, and assignments wait for approval.</span>
                     </label>
                     <label class="autopilot-radio-label" style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:0.85rem;">
                       <input type="radio" name="autoSendMode" value="full_prepare" style="margin-top:3px;">
-                      <span><strong>Full preparation</strong> — Automatically research, generate reports, create PDF/DOCX, prepare attachments, and create Gmail drafts. Substantive commitments held for review.</span>
+                      <span><strong>Full preparation</strong> â€” Automatically research, generate reports, create PDF/DOCX, prepare attachments, and create Gmail drafts. Substantive commitments held for review.</span>
                     </label>
                   </div>
                 </div>
@@ -450,19 +452,63 @@
     </section>
   </div>
 
-  <script src="./mailmate-objects.js?v=18"></script>
-  <script src="./mailmate-context.js?v=18"></script>
-  <script src="./kyle-referents.js?v=18"></script>
-  <script src="./kyle-state.js?v=18"></script>
-  <script src="./kyle-policy.js?v=18"></script>
-  <script src="./kyle-observation.js?v=18"></script>
-  <script src="./kyle-motion.js?v=18"></script>
-  <script src="./kyle-tools.js?v=18"></script>
-  <script src="./kyle-executor.js?v=18"></script>
-  <script src="./kyle-planner.js?v=18"></script>
-  <script src="./kyle-audio.js?v=18"></script>
-  <script src="./kyle-ui.js?v=18"></script>
-  <script src="./kyle.js?v=18"></script>
-  <script src="./dashboard.js?v=18"></script>
+  <div class="calendar-modal" id="automationModal" hidden>
+    <section class="calendar-modal-card automation-modal-card" role="dialog" aria-modal="true" aria-labelledby="automationModalTitle">
+      <header>
+        <div><p class="section-label">Scheduled Kyle run</p><h2 id="automationModalTitle">New automation</h2></div>
+        <button class="icon-btn plain-icon" id="automationModalClose" type="button" aria-label="Close"><i class="fas fa-xmark"></i></button>
+      </header>
+      <form id="automationForm">
+        <input type="hidden" id="automationId">
+        <label>Name<input id="automationName" type="text" required maxlength="100" placeholder="Morning brief"></label>
+        <label>Kyle does<textarea id="automationGoal" rows="4" required maxlength="1200" placeholder="Check important Gmail, deadlines and Calendar, then prepare a summary."></textarea></label>
+        <div class="calendar-form-grid automation-schedule-grid">
+          <label>When
+            <select id="automationScheduleType">
+              <option value="daily">Every day</option>
+              <option value="weekly">Every week</option>
+              <option value="once">Once</option>
+              <option value="interval">At an interval</option>
+            </select>
+          </label>
+          <label id="automationTimeField">Time<input id="automationTime" type="time" value="08:00"></label>
+          <label id="automationWeekdayField" hidden>Day
+            <select id="automationWeekday">
+              <option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option>
+              <option value="3">Thursday</option><option value="4">Friday</option><option value="5">Saturday</option><option value="6">Sunday</option>
+            </select>
+          </label>
+          <label id="automationOnceField" hidden>Date and time<input id="automationOnceAt" type="datetime-local"></label>
+          <label id="automationIntervalField" hidden>Every (minutes)<input id="automationIntervalMinutes" type="number" min="5" max="10080" value="240"></label>
+        </div>
+        <div class="calendar-modal-footer">
+          <button class="danger-text-btn" id="automationDeleteBtn" type="button" hidden>Delete</button>
+          <div>
+            <button class="secondary-btn" id="automationCancelBtn" type="button">Cancel</button>
+            <button class="btn btn-primary" type="submit">Save automation</button>
+          </div>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <script src="./mailmate-objects.js?v=19"></script>
+  <script src="./mailmate-context.js?v=19"></script>
+  <script src="./kyle-referents.js?v=19"></script>
+  <script src="./kyle-state.js?v=19"></script>
+  <script src="./kyle-policy.js?v=21"></script>
+  <script src="./kyle-observation.js?v=19"></script>
+  <script src="./kyle-motion.js?v=21"></script>
+  <script src="./kyle-tools.js?v=21"></script>
+  <script src="./kyle-executor.js?v=21"></script>
+  <script src="./kyle-planner.js?v=21"></script>
+  <script src="./kyle-audio.js?v=30"></script>
+  <script src="./kyle-ui.js?v=30"></script>
+  <script src="./kyle.js?v=30"></script>
+  <script src="./calendar-conflicts.js?v=21"></script>
+  <script src="./dashboard.js?v=30"></script>
+  <script src="/remote-worker-ui.js?v=5"></script>
 </body>
 </html>
+
+

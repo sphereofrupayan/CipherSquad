@@ -68,7 +68,6 @@ pdfminer.six==20260107
 pdfplumber==0.11.10
 pillow==12.3.0
 pluggy==1.6.0
-postgrest==2.31.0
 propcache==0.5.2
 proto-plus==1.28.2
 protobuf==5.29.6
@@ -96,7 +95,6 @@ python-engineio==4.14.0
 python-socketio==5.16.4
 pyworld==0.3.5
 PyYAML==6.0.3
-realtime==2.31.0
 requests==2.34.2
 requests-oauthlib==2.0.0
 scipy==1.17.1
@@ -105,11 +103,7 @@ simple-websocket==1.1.0
 six==1.17.0
 sounddevice==0.5.6
 soundfile==0.14.0
-storage3==2.31.0
 StrEnum==0.4.15
-supabase==2.31.0
-supabase-auth==2.31.0
-supabase-functions==2.31.0
 sympy==1.14.0
 TextGrid==1.6.1
 tokenizers==0.23.1

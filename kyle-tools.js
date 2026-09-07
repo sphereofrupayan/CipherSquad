@@ -95,6 +95,16 @@
           }));
           window.dispatchEvent(new CustomEvent('harness:calendar-refresh'));
           return result;
+        },
+
+        async deleteEvents(eventIds) {
+          const result = await readJson(await fetch(`${API_BASE}/api/calendar/events/delete-batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ event_ids: eventIds })
+          }));
+          window.dispatchEvent(new CustomEvent('harness:calendar-refresh'));
+          return result;
         }
       }
     };
@@ -239,6 +249,138 @@
       previews.delete(preview.id);
       const reference = { type: 'calendar-event', id: String(event.id), label: event.title || preview.payload.title };
       return { ok: true, event, reference, undo: () => actions.calendar.deleteEvent(event.id) };
+    },
+    'calendar.inspect_event': async args => {
+      const reference = exactReference(args);
+      if (reference.type !== 'calendar-event') throw new Error('Expected a calendar event reference');
+      const event = window.AgentCalendar?.getEvents?.().find(item => String(item.id) === reference.id);
+      if (!event) throw new Error('Calendar event is not available');
+      return { ok: true, event };
+    },
+    'calendar.delete_prepare': async args => {
+      const requested = Array.isArray(args.references) ? args.references : [args.reference || args];
+      const references = requested.map(item => exactReference(item));
+      if (references.some(reference => reference.type !== 'calendar-event')) throw new Error('Expected calendar event references');
+      const available = window.AgentCalendar?.getVisibleEvents?.() || window.AgentCalendar?.getEvents?.() || [];
+      const events = references.map(reference => available.find(item => String(item.id) === reference.id)).filter(Boolean);
+      if (events.length !== references.length) throw new Error('One or more calendar events are no longer available');
+      const previewId = `delete_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      previews.set(previewId, { id: previewId, kind: 'delete', events, references });
+      window.KyleUi?.active?.showCalendarConfirmation?.(events);
+      return { ok: true, previewId, events, requiresApproval: true, approvalKind: 'calendar-delete' };
+    },
+    'calendar.delete_confirmed': async args => {
+      const preview = previews.get(String(args.previewId || ''));
+      if (!preview || preview.kind !== 'delete') throw new Error('Delete confirmation expired');
+      const virtualEvents = preview.events.filter(event => event.source === 'deadline');
+      const googleEvents = preview.events.filter(event => event.source !== 'deadline');
+      const eventIds = googleEvents.map(event => String(event.id));
+      const virtualDeleted = [];
+      const failed = [];
+      for (const event of virtualEvents) {
+        try {
+          await window.AgentCalendar?.dismissDeadline?.(event.marker);
+          virtualDeleted.push({ id: event.id, marker: event.marker, source: 'deadline' });
+        } catch (error) {
+          failed.push({ id: event.id, error: error.message });
+        }
+      }
+      const result = eventIds.length
+        ? await actions.calendar.deleteEvents(eventIds)
+        : { deleted: [], failed: [] };
+      previews.delete(preview.id);
+      const refreshed = await window.AgentCalendar?.refresh?.();
+      const remainingIds = new Set((refreshed || []).map(event => String(event.id)));
+      const verifiedDeleted = eventIds.filter(id => !remainingIds.has(id));
+      failed.push(...(result.failed || []));
+      eventIds.filter(id => remainingIds.has(id)).forEach(id => {
+        if (!failed.some(item => String(item.id) === id)) failed.push({ id, error: 'Event still exists after refresh' });
+      });
+      return {
+        ok: failed.length === 0,
+        deletedCount: verifiedDeleted.length + virtualDeleted.length,
+        failedCount: failed.length,
+        deleted: [...(result.deleted || []), ...virtualDeleted],
+        failed
+      };
+    },
+    'calendar.refresh': async () => ({ ok: true, events: await window.AgentCalendar?.refresh?.() }),
+    'automation.run_now': async args => {
+      const reference = exactReference(args);
+      if (reference.type !== 'automation') throw new Error('Expected an automation reference');
+      return { ok: true, result: await window.AgentAutomations?.runNow?.(reference.id) };
+    },
+    'automation.enable': async args => {
+      const reference = exactReference(args);
+      if (reference.type !== 'automation') throw new Error('Expected an automation reference');
+      return { ok: true, automation: await window.AgentAutomations?.setEnabled?.(reference.id, true) };
+    },
+    'automation.disable': async args => {
+      const reference = exactReference(args);
+      if (reference.type !== 'automation') throw new Error('Expected an automation reference');
+      return { ok: true, automation: await window.AgentAutomations?.setEnabled?.(reference.id, false) };
+    },
+    'mail.compose': async args => {
+      const draft = {
+        recipient: args.recipient || args.to || '',
+        to: args.to || '',
+        subject: args.subject || '',
+        body: args.body || ''
+      };
+      if (window.KyleUi?.active?.openComposer) {
+        window.KyleUi.active.openComposer(draft, 'compose');
+      } else {
+        window.dispatchEvent(new CustomEvent('kyle:composer-open', { detail: { draft, mode: 'compose' } }));
+      }
+      return {
+        ok: true,
+        undo: () => {
+          if (window.KyleUi?.active?.closeComposer) window.KyleUi.active.closeComposer();
+          else window.dispatchEvent(new CustomEvent('kyle:composer-close'));
+        }
+      };
+    },
+    'mail.reply': async args => {
+      const draft = {
+        recipient: args.recipient || args.to || '',
+        to: args.to || '',
+        subject: args.subject || '',
+        body: args.body || '',
+        thread_id: args.thread_id || null,
+        in_reply_to: args.in_reply_to || null
+      };
+      if (window.KyleUi?.active?.openComposer) {
+        window.KyleUi.active.openComposer(draft, 'reply');
+      } else {
+        window.dispatchEvent(new CustomEvent('kyle:composer-open', { detail: { draft, mode: 'reply' } }));
+      }
+      return {
+        ok: true,
+        undo: () => {
+          if (window.KyleUi?.active?.closeComposer) window.KyleUi.active.closeComposer();
+          else window.dispatchEvent(new CustomEvent('kyle:composer-close'));
+        }
+      };
+    },
+    'mail.update_draft': async args => {
+      if (window.KyleUi?.active?.setComposerDraft) {
+        window.KyleUi.active.setComposerDraft(args);
+      }
+      return { ok: true };
+    },
+    'mail.send_draft': async args => {
+      if (window.KyleUi?.active?.sendCurrentComposer) {
+        return await window.KyleUi.active.sendCurrentComposer();
+      }
+      return { ok: false, error: 'Composer not available' };
+    },
+    'mail.close_composer': async args => {
+      if (window.KyleUi?.active?.closeComposer) {
+        window.KyleUi.active.closeComposer();
+      } else {
+        window.dispatchEvent(new CustomEvent('kyle:composer-close'));
+      }
+      return { ok: true };
     }
   };
 
@@ -262,7 +404,7 @@
       });
     }
     const results = [];
-    for (const action of requestedActions.slice(0, 5)) {
+    for (const action of requestedActions.slice(0, 24)) {
       if (!semanticTools[action?.tool]) {
         results.push({ tool: action?.tool || '', ok: false, error: 'Tool is not allowed' });
         continue;

@@ -8,6 +8,9 @@ import re
 import threading
 import time
 import hashlib
+import hmac
+import ipaddress
+import requests
 from dateutil import parser as date_parser
 
 from flask import Flask, request, jsonify, redirect, send_from_directory, session, abort
@@ -26,20 +29,18 @@ load_dotenv(BASE_DIR / 'api.env')
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
 
-from services.google_service import get_auth_url, handle_callback, get_user_profile, get_gmail_threads, get_gmail_message_ids, get_gmail_message, mark_gmail_message_read, trash_gmail_message, get_gmail_permissions, GmailInsufficientPermissionError
+from email.utils import parseaddr
+from services.whisper_service import whisper_service
+from services.google_service import get_auth_url, handle_callback, get_user_profile, get_gmail_threads, get_gmail_message_ids, get_gmail_message, mark_gmail_message_read, trash_gmail_message, get_gmail_permissions, GmailInsufficientPermissionError, send_gmail_direct, send_gmail_draft, find_sent_message_by_rfc_id
 from services.calendar_service import list_events as calendar_list_events, create_event as calendar_create_event, update_event as calendar_update_event, delete_event as calendar_delete_event, find_event as calendar_find_event, access_status as calendar_access_status, upsert_ai_deadline_event as calendar_upsert_ai_deadline
 from services.ai_service import get_dashboard_overview, chat_with_kyle, generate_kyle_agent_reply
 from services.work_agent_service import work_agent_service
-from services.whisper_service import whisper_service
 from services.privacy_gate import PrivacyGate
 from services.system_context_service import system_context_service
-
-
-# Kick off local Whisper model preparation in background
-try:
-    whisper_service.initialize()
-except Exception as _w_err:
-    print(f"[Whisper] Background init notice: {_w_err}")
+from services.automation_service import automation_service
+from services.calendar_conflicts import calculate_conflicts
+from services.agent.inference_broker import inference_broker
+from services.agent.token_budget import approximate_tokens, bounded_payload
 
 app = Flask(__name__, static_folder=None)
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'default-dev-secret-key-123')
@@ -48,6 +49,10 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='Lax'
 )
 CORS(app)
+
+# Initialize local Whisper STT in background
+if str(os.getenv('MAILMATE_DISABLE_WHISPER_INIT', '')).strip().lower() not in {'1', 'true', 'yes', 'on'}:
+    whisper_service.initialize()
 
 APP_TIMEZONE = os.getenv('APP_TIMEZONE', 'Asia/Kolkata')
 
@@ -66,7 +71,57 @@ CACHE_REPROCESS_SECONDS = max(CACHE_SYNC_SECONDS, int(os.getenv('CACHE_REPROCESS
 AI_CALENDAR_SYNC_SECONDS = max(30, int(os.getenv('AI_CALENDAR_SYNC_SECONDS', '180')))
 _ai_calendar_last_sync = {}
 CALENDAR_DISMISSALS_FILE = DATA_DIR / 'calendar_dismissals.json'
+_mail_send_lock = threading.Lock()
+_mail_send_operations = {}
 _calendar_dismissal_lock = threading.Lock()
+
+
+def _run_scheduled_kyle_goal(automation):
+    user_id = str((automation or {}).get('user_id') or 'default')
+    run = work_agent_service.create_automation_run(user_id, automation)
+    run_id = run['id']
+    try:
+        threads, _ = get_gmail_threads()
+        work_agent_service.add_automation_run_step(run_id, user_id, 'Checked current Gmail context')
+        overview = get_dashboard_overview(threads or [])
+        attention = list(overview.get('needs_attention') or [])
+        work_agent_service.add_automation_run_step(
+            run_id,
+            user_id,
+            f'Found {len(attention)} item{"s" if len(attention) != 1 else ""} needing attention',
+        )
+
+        calendar_events, conflict_pairs = calculate_conflicts(calendar_list_events(limit=100) or [])
+        real_events = [event for event in calendar_events if event.get('source') == 'google']
+        conflicts = len(conflict_pairs)
+        work_agent_service.add_automation_run_step(run_id, user_id, 'Checked Google Calendar and schedule clashes')
+
+        goal = str(((automation or {}).get('action') or {}).get('goal') or '').strip()
+        summary = (
+            f'Kyle completed "{goal}" ' if goal else 'Kyle completed the scheduled workspace check. '
+        )
+        summary += (
+            f'{len(threads or [])} recent Gmail thread{"s" if len(threads or []) != 1 else ""}, '
+            f'{len(attention)} attention item{"s" if len(attention) != 1 else ""}, and '
+            f'{len(real_events)} Google Calendar event{"s" if len(real_events) != 1 else ""} were checked.'
+        )
+        if conflicts:
+            summary += f' {conflicts} genuine schedule clash{"es" if conflicts != 1 else ""} need review.'
+        checklist = [
+            str(item.get('description') or item.get('title') or 'Review attention item')[:240]
+            for item in attention[:6]
+        ]
+        work_agent_service.finish_automation_run(run_id, user_id, summary, checklist=checklist)
+        system_context_service.increment_version()
+        return run_id
+    except Exception as exc:
+        work_agent_service.finish_automation_run(run_id, user_id, 'The scheduled run could not finish.', error=str(exc))
+        system_context_service.increment_version()
+        raise
+
+
+automation_service.set_runner(_run_scheduled_kyle_goal)
+automation_service.start()
 
 
 def _calendar_account_key(profile=None):
@@ -150,6 +205,25 @@ def _prune_payload_to_live_gmail(payload, live_ids):
     result['gmail_pruned_count'] = len(removed_ids)
     return result
 
+# MAILMATE_TAILNET_COMPUTE_ONLY_GUARD
+@app.before_request
+def _mailmate_tailnet_compute_only():
+    """Tailnet peers may use compute only; Priyam's Gmail/session routes stay local."""
+    remote = str(request.remote_addr or "").strip()
+    try:
+        ip = ipaddress.ip_address(remote)
+    except ValueError:
+        return None
+
+    if ip.is_loopback:
+        return None
+    if ip in ipaddress.ip_network("100.64.0.0/10"):
+        if request.path.startswith("/api/compute/"):
+            return None
+        return jsonify({"error": "tailnet_compute_only"}), 403
+    return None
+
+
 @app.route('/')
 def index():
     return send_from_directory(str(BASE_DIR), 'index.html')
@@ -188,6 +262,10 @@ def health():
     return jsonify({
         "ok": True,
         "googleClientConfigured": bool(os.getenv('GOOGLE_CLIENT_ID')),
+        "geminiConfigured": bool(os.getenv('GEMINI_API_KEY')),
+        "geminiFallbackEnabled": str(os.getenv('MAILMATE_CLOUD_FALLBACK', '0')).lower() in {'1', 'true', 'yes', 'on'},
+        "localModelConfigured": bool(os.getenv('LM_STUDIO_BASE_URL', 'http://127.0.0.1:2806/v1')),
+        "whisper": whisper_service.get_status(),
         "supabaseConfigured": False,
         "supabase": {"enabled": False, "configured": False, "ready": False, "mode": "disabled"},
         "privacyGate": {"enabled": True, "mode": "deterministic-local", "centralRetention": "disabled"},
@@ -198,7 +276,7 @@ def health():
         "gmailWrite": get_gmail_permissions().get("can_write", False),
         "gmailPermissions": get_gmail_permissions(),
         "appTimezone": APP_TIMEZONE,
-        "voiceInput": "browser-speech-recognition",
+        "voiceInput": "local-whisper-with-browser-fallback" if whisper_service.get_status().get("available") else "browser-speech-recognition",
         "staticFiles": {
             "index.html": (BASE_DIR / "index.html").is_file(),
             "styles.css": (BASE_DIR / "styles.css").is_file(),
@@ -219,6 +297,277 @@ def config():
         "googleClientId": os.getenv('GOOGLE_CLIENT_ID', ''),
         "backendAuthUrl": "/auth/google"
     })
+
+
+
+# MAILMATE_EMBEDDED_COMPUTE_PROXY_START
+MAILMATE_COMPUTE_MAX_BYTES = 2 * 1024 * 1024
+_compute_health_lock = threading.Lock()
+_compute_health_cache = {}
+_compute_generation_lock = threading.Lock()
+_compute_generation_cache = {}
+_compute_generation_inflight = {}
+
+
+def _env_truthy(name):
+    return str(os.getenv(name, '')).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _worker_host_enabled():
+    value = str(os.getenv('MAILMATE_WORKER_HOST', '')).strip().lower()
+    return bool(value) and value not in {'0', 'false', 'no', 'off'}
+
+def _mailmate_compute_authorized():
+    # Same-machine and Tailscale devices may use the inference-only route.
+    remote = str(request.remote_addr or "").strip()
+    try:
+        ip = ipaddress.ip_address(remote)
+        if ip.is_loopback or ip in ipaddress.ip_network("100.64.0.0/10"):
+            return True
+    except ValueError:
+        pass
+
+    # Optional bearer token remains supported for explicit non-Tailscale routes.
+    expected = os.getenv("MAILMATE_WORKER_TOKEN", "").strip()
+    if not expected:
+        return False
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return False
+    supplied = header[7:].strip()
+    return bool(supplied) and hmac.compare_digest(supplied, expected)
+
+@app.route("/api/compute/health", methods=["GET"])
+def embedded_compute_health():
+    if not _mailmate_compute_authorized():
+        return jsonify({"error": "unauthorized"}), 401
+    local = _mailmate_probe_local_compute()
+    ready = bool(local.get("available"))
+    return jsonify({
+        "ok": ready,
+        "worker": "mailmate-embedded-compute",
+        "transport": "tailscale",
+        "lm_studio": local,
+        "retention": "none",
+    }), 200 if ready else 503
+
+@app.route("/api/compute/v1/chat/completions", methods=["POST"])
+def embedded_compute_completion():
+    if not _mailmate_compute_authorized():
+        return jsonify({"error": "unauthorized"}), 401
+    if request.content_length and request.content_length > MAILMATE_COMPUTE_MAX_BYTES:
+        return jsonify({"error": "request_too_large"}), 413
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "invalid_json"}), 400
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return jsonify({"error": "messages_required"}), 400
+    if len(messages) > 64:
+        return jsonify({"error": "too_many_messages"}), 400
+
+    request_kind = request.headers.get('X-Mailmate-Request-Kind', 'work').strip().lower()
+    if request_kind not in {'interactive', 'work', 'automation', 'background'}:
+        request_kind = 'work'
+    payload = bounded_payload(payload, max_input_tokens=3500)
+    payload.setdefault('chat_template_kwargs', {})['enable_thinking'] = False
+    payload['max_tokens'] = max(1, min(int(payload.get('max_tokens') or 500), 800))
+    input_tokens = sum(approximate_tokens(item.get('content') or '') for item in payload['messages'])
+
+    request_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+    now = time.monotonic()
+    with _compute_generation_lock:
+        cached = _compute_generation_cache.get(request_hash)
+        if cached and now - cached['at'] < 8:
+            response = jsonify(cached['body'])
+            response.headers['X-Mailmate-Input-Tokens-Approx'] = str(input_tokens)
+            response.headers['X-Mailmate-Single-Flight'] = 'cache'
+            return response, cached['status']
+        flight = _compute_generation_inflight.get(request_hash)
+        if flight is None:
+            flight = threading.Event()
+            _compute_generation_inflight[request_hash] = flight
+            leader = True
+        else:
+            leader = False
+
+    if not leader:
+        flight.wait(timeout=int(os.getenv('MAILMATE_WORKER_TIMEOUT_SECONDS', '45')) + 5)
+        with _compute_generation_lock:
+            cached = _compute_generation_cache.get(request_hash)
+        if not cached:
+            return jsonify({'error': 'local_model_unavailable'}), 503
+        response = jsonify(cached['body'])
+        response.headers['X-Mailmate-Input-Tokens-Approx'] = str(input_tokens)
+        response.headers['X-Mailmate-Single-Flight'] = 'shared'
+        return response, cached['status']
+
+    base = os.getenv("LM_STUDIO_BASE_URL", "http://127.0.0.1:2806/v1").rstrip("/")
+    try:
+        with inference_broker.slot(request_kind):
+            upstream = requests.post(
+                f"{base}/chat/completions",
+                json=payload,
+                timeout=int(os.getenv("MAILMATE_WORKER_TIMEOUT_SECONDS", "45")),
+            )
+        try:
+            body = upstream.json()
+            status = upstream.status_code
+            if status < 400 and isinstance(body, dict):
+                choices = body.get('choices') or []
+                message = (choices[0].get('message') or {}) if choices else {}
+                content = str(message.get('content') or '').strip()
+                reasoning = str(message.get('reasoning_content') or '').strip()
+                finish_reason = choices[0].get('finish_reason') if choices else None
+                if not content and (reasoning or finish_reason == 'length'):
+                    body, status = {
+                        'error': 'invalid_model_output',
+                        'detail': 'Local model reasoning consumed the response budget.',
+                    }, 502
+        except Exception:
+            body, status = {'error': 'invalid_upstream_response', 'status': upstream.status_code}, 502
+    except requests.RequestException:
+        body, status = {'error': 'local_model_unavailable'}, 503
+    finally:
+        with _compute_generation_lock:
+            if 'body' in locals():
+                _compute_generation_cache.clear()
+                _compute_generation_cache[request_hash] = {'at': time.monotonic(), 'body': body, 'status': status}
+            event = _compute_generation_inflight.pop(request_hash, None)
+            if event:
+                event.set()
+
+    response = jsonify(body)
+    response.headers['X-Mailmate-Input-Tokens-Approx'] = str(input_tokens)
+    response.headers['X-Mailmate-Single-Flight'] = 'leader'
+    return response, status
+# MAILMATE_EMBEDDED_COMPUTE_PROXY_END
+
+# MAILMATE_REMOTE_COMPUTE_STATUS_START
+def _cached_compute_probe(cache_key, probe, ttl=5):
+    now = time.monotonic()
+    with _compute_health_lock:
+        cached = _compute_health_cache.get(cache_key)
+        if cached and now - cached['at'] < ttl:
+            return dict(cached['value'])
+    value = probe()
+    with _compute_health_lock:
+        _compute_health_cache[cache_key] = {'at': now, 'value': dict(value)}
+    return value
+
+
+def _mailmate_probe_local_compute_uncached():
+    base = os.getenv("LM_STUDIO_BASE_URL", "http://127.0.0.1:2806/v1").rstrip("/")
+    started = time.perf_counter()
+    try:
+        response = requests.get(f"{base}/models", timeout=1.6)
+        return {
+            "configured": True,
+            "available": bool(response.ok),
+            "status": response.status_code,
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+        }
+    except Exception:
+        return {
+            "configured": True,
+            "available": False,
+            "status": None,
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+        }
+
+
+def _mailmate_probe_local_compute():
+    return _cached_compute_probe('local', _mailmate_probe_local_compute_uncached)
+
+
+def _mailmate_probe_remote_compute_uncached():
+    base = os.getenv("MAILMATE_REMOTE_WORKER_URL", "http://100.114.2.88:5000/api/compute").strip().rstrip("/")
+    if not base:
+        return {
+            "configured": False,
+            "available": False,
+            "status": None,
+            "latency_ms": None,
+        }
+
+    started = time.perf_counter()
+    try:
+        worker_token = os.getenv("MAILMATE_WORKER_TOKEN", "").strip()
+        headers = {"Authorization": f"Bearer {worker_token}"} if worker_token else {}
+        response = requests.get(f"{base}/health", headers=headers, timeout=1.8)
+        payload = response.json() if response.content else {}
+        return {
+            "configured": True,
+            "available": bool(response.ok and payload.get("ok")),
+            "status": response.status_code,
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+            "worker": payload.get("worker"),
+            "retention": payload.get("retention"),
+        }
+    except Exception:
+        return {
+            "configured": True,
+            "available": False,
+            "status": None,
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+        }
+
+
+def _mailmate_probe_remote_compute():
+    return _cached_compute_probe('remote', _mailmate_probe_remote_compute_uncached)
+
+
+@app.route("/api/compute/status")
+def mailmate_compute_status():
+    is_host = _worker_host_enabled()
+    client_local = _env_truthy('MAILMATE_CLIENT_LOCAL_LM')
+    local = _mailmate_probe_local_compute() if is_host or client_local else {
+        'configured': False, 'available': False, 'status': None, 'latency_ms': None,
+    }
+    remote = _mailmate_probe_remote_compute() if not is_host else {
+        'configured': False, 'available': False, 'status': None, 'latency_ms': None,
+    }
+
+    ready = bool(local.get("available") or remote.get("available"))
+    mode = (
+        "local"
+        if local.get("available")
+        else "remote_local"
+        if remote.get("available")
+        else "unavailable"
+    )
+
+    label = os.getenv(
+        "MAILMATE_COMPUTE_LABEL",
+        "Priyam's Tailscale workstation"
+    ).strip() or "Priyam's Tailscale workstation"
+
+    role = "host" if is_host else "client"
+
+    return jsonify({
+        "ok": True,
+        "ready": ready,
+        "mode": mode,
+        "role": role,
+        "local": local,
+        "remote": remote,
+        "inference": inference_broker.status(),
+        "connect_label": label,
+        "requires_hotspot": bool(
+            not local.get("available")
+            and remote.get("configured")
+            and not remote.get("available")
+        ),
+        "message": (
+            "Kyle Work is ready."
+            if ready
+            else f"Connect Tailscale and make sure {label} is online."
+            if remote.get("configured")
+            else "Kyle Work needs a local or configured team workstation."
+        ),
+    })
+# MAILMATE_REMOTE_COMPUTE_STATUS_END
 
 def _oauth_origin():
     redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:5000/auth/google/callback')
@@ -591,6 +940,17 @@ def list_work_jobs():
         return jsonify({"error": "Not authenticated"}), 401
     user_id = profile.get('email') or profile.get('id')
     jobs = work_agent_service.list_jobs(user_id)
+
+    ensure = str(request.args.get('ensure', '')).lower() in {'1', 'true', 'yes'}
+    if ensure and not jobs:
+        try:
+            live_payload = _build_live_dashboard(profile, force_ai=False)
+            work_agent_service.sync_and_enqueue(user_id, live_payload)
+            jobs = work_agent_service.list_jobs(user_id, reconcile=False)
+            system_context_service.increment_version()
+        except Exception as ensure_exc:
+            app.logger.debug('Work ensure sync notice: %s', ensure_exc)
+
     return jsonify(jobs)
 
 
@@ -669,6 +1029,56 @@ def work_settings():
         settings = work_agent_service.update_settings(data)
         return jsonify({"ok": True, "settings": settings})
     return jsonify(work_agent_service.get_settings())
+
+
+def _automation_user_id():
+    profile = get_user_profile()
+    return (profile or {}).get('email') or (profile or {}).get('id')
+
+
+@app.route('/api/automations', methods=['GET', 'POST'])
+def automations_collection():
+    user_id = _automation_user_id()
+    if not user_id:
+        return jsonify({'error': 'Not authenticated'}), 401
+    try:
+        if request.method == 'POST':
+            return jsonify(automation_service.create(user_id, request.get_json(silent=True) or {})), 201
+        return jsonify(automation_service.list(user_id))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+
+@app.route('/api/automations/<automation_id>', methods=['GET', 'PATCH', 'DELETE'])
+def automation_detail(automation_id):
+    user_id = _automation_user_id()
+    if not user_id:
+        return jsonify({'error': 'Not authenticated'}), 401
+    try:
+        if request.method == 'DELETE':
+            if not automation_service.delete(automation_id, user_id):
+                return jsonify({'error': 'Automation not found'}), 404
+            return jsonify({'ok': True, 'deleted': automation_id})
+        if request.method == 'PATCH':
+            automation = automation_service.update(automation_id, user_id, request.get_json(silent=True) or {})
+        else:
+            automation = automation_service.get(automation_id, user_id)
+        if not automation:
+            return jsonify({'error': 'Automation not found'}), 404
+        return jsonify(automation)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+
+@app.route('/api/automations/<automation_id>/run', methods=['POST'])
+def automation_run_now(automation_id):
+    user_id = _automation_user_id()
+    if not user_id:
+        return jsonify({'error': 'Not authenticated'}), 401
+    result = automation_service.run_now(automation_id, user_id)
+    if not result:
+        return jsonify({'error': 'Automation not found'}), 404
+    return jsonify(result), 202
 
 
 @app.route('/api/work/jobs/<job_id>/cancel-countdown', methods=['POST'])
@@ -760,45 +1170,6 @@ def work_reconcile_endpoint():
     })
 
 
-@app.route('/api/stt/status', methods=['GET'])
-def stt_status():
-    return jsonify(whisper_service.get_status())
-
-
-@app.route('/api/stt/init', methods=['POST'])
-def stt_init():
-    whisper_service.initialize()
-    return jsonify({"message": "Whisper initialization started", "status": whisper_service.get_status()})
-
-
-@app.route('/api/stt/transcribe', methods=['POST'])
-def stt_transcribe():
-    file = request.files.get('audio') or request.files.get('file')
-    if not file or file.filename == '':
-        return jsonify({"error": "No audio file provided"}), 400
-
-    import tempfile
-    suffix = Path(file.filename).suffix or '.webm'
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        file.save(tmp.name)
-        tmp_path = tmp.name
-
-    try:
-        result = whisper_service.transcribe(tmp_path)
-        return jsonify(result)
-    except Exception as e:
-        if str(e) == "whisper_model_loading":
-            return jsonify({"error": "Whisper model is still loading"}), 503
-        app.logger.warning(f"Whisper transcription failed: {e}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except Exception:
-            pass
-
-
 @app.route('/api/cache/status')
 def cache_status():
     profile = get_user_profile()
@@ -865,6 +1236,155 @@ def gmail_message_read(message_id):
         }), status
 
 
+@app.route('/api/mail/send', methods=['POST'])
+def send_mail_endpoint():
+    profile = get_user_profile()
+    if not profile:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    data = request.get_json(silent=True) or {}
+    operation_id = str(data.get('operation_id') or '').strip()
+    to = str(data.get('to') or data.get('recipient') or '').strip()
+    subject = str(data.get('subject') or 'No Subject').strip()
+    body = str(data.get('body') or '').strip()
+    thread_id = data.get('thread_id')
+    in_reply_to = data.get('in_reply_to')
+    draft_id = data.get('draft_id')
+
+    _, recipient = parseaddr(to)
+    recipient = recipient.strip().lower()
+    if not re.fullmatch(r'[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}', recipient, re.I):
+        return jsonify({'code': 'invalid_recipient', 'error': 'A valid recipient email is required.'}), 400
+    if not body:
+        return jsonify({'code': 'empty_body', 'error': 'Message body is required.'}), 400
+    if not re.fullmatch(r'[A-Za-z0-9_-]{8,100}', operation_id):
+        return jsonify({'code': 'invalid_operation_id', 'error': 'A valid operation_id is required.'}), 400
+
+    user_id = str(profile.get('email') or profile.get('id') or 'default').lower()
+    operation_key = f'{user_id}:{operation_id}'
+    payload_digest = hashlib.sha256(json.dumps({
+        'to': recipient,
+        'subject': subject,
+        'body': body,
+        'thread_id': thread_id,
+        'in_reply_to': in_reply_to,
+        'draft_id': draft_id,
+    }, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+    message_id_header = f'<mailmate.{operation_id}@mailmate.local>'
+
+    with _mail_send_lock:
+        cutoff = time.time() - 1800
+        for key, value in list(_mail_send_operations.items()):
+            if value.get('updated_at', 0) < cutoff:
+                _mail_send_operations.pop(key, None)
+        existing = _mail_send_operations.get(operation_key)
+        if existing and existing.get('digest') != payload_digest:
+            return jsonify({'code': 'operation_conflict', 'error': 'This send operation was already used for different content.'}), 409
+        if existing and existing.get('status') == 'sent':
+            return jsonify({'ok': True, 'status': 'sent', 'message_id': existing.get('message_id'), 'idempotent_replay': True})
+        if existing and existing.get('status') == 'pending':
+            return jsonify({'ok': False, 'status': 'sending', 'operation_id': operation_id}), 202
+
+    if existing and existing.get('status') == 'unknown' and not draft_id:
+        try:
+            reconciled = find_sent_message_by_rfc_id(message_id_header)
+        except Exception:
+            reconciled = None
+        if reconciled:
+            with _mail_send_lock:
+                _mail_send_operations[operation_key] = {
+                    'digest': payload_digest, 'status': 'sent', 'message_id': reconciled.get('id'), 'updated_at': time.time(),
+                }
+            return jsonify({'ok': True, 'status': 'sent', 'message_id': reconciled.get('id'), 'reconciled': True})
+        return jsonify({'ok': False, 'status': 'unknown', 'operation_id': operation_id, 'code': 'send_unconfirmed'}), 202
+
+    with _mail_send_lock:
+        _mail_send_operations[operation_key] = {
+            'digest': payload_digest, 'status': 'pending', 'message_id': None, 'updated_at': time.time(),
+        }
+
+    try:
+        if draft_id:
+            result = send_gmail_draft(draft_id)
+        else:
+            result = send_gmail_direct(
+                to=recipient,
+                subject=subject,
+                body=body,
+                thread_id=thread_id,
+                in_reply_to=in_reply_to,
+                message_id_header=message_id_header,
+            )
+        msg_id = result.get('id') if isinstance(result, dict) else (result if isinstance(result, str) else None)
+        with _mail_send_lock:
+            _mail_send_operations[operation_key] = {
+                'digest': payload_digest, 'status': 'sent', 'message_id': msg_id, 'updated_at': time.time(),
+            }
+        return jsonify({'ok': True, 'status': 'sent', 'result': result, 'message_id': msg_id})
+    except GmailInsufficientPermissionError as exc:
+        with _mail_send_lock:
+            _mail_send_operations[operation_key] = {
+                'digest': payload_digest, 'status': 'error', 'message_id': None, 'updated_at': time.time(),
+            }
+        return jsonify({'code': 'reconnect_google', 'error': str(exc)}), 403
+    except Exception as exc:
+        app.logger.exception('Send mail failed')
+        reconciled = None
+        if not draft_id:
+            try:
+                reconciled = find_sent_message_by_rfc_id(message_id_header)
+            except Exception:
+                pass
+        if reconciled:
+            with _mail_send_lock:
+                _mail_send_operations[operation_key] = {
+                    'digest': payload_digest, 'status': 'sent', 'message_id': reconciled.get('id'), 'updated_at': time.time(),
+                }
+            return jsonify({'ok': True, 'status': 'sent', 'message_id': reconciled.get('id'), 'reconciled': True})
+        with _mail_send_lock:
+            _mail_send_operations[operation_key] = {
+                'digest': payload_digest, 'status': 'unknown', 'message_id': None, 'updated_at': time.time(),
+            }
+        return jsonify({
+            'code': 'send_unconfirmed',
+            'error': "Couldn't confirm send; checking Gmail is required.",
+            'status': 'unknown',
+            'operation_id': operation_id,
+        }), 503
+
+
+@app.route('/api/stt/status', methods=['GET'])
+def stt_status():
+    return jsonify(whisper_service.get_status())
+
+
+@app.route('/api/stt/transcribe', methods=['POST'])
+def stt_transcribe():
+    if 'audio' not in request.files:
+        return jsonify({'error': 'No audio file provided'}), 400
+    audio_file = request.files['audio']
+    if not audio_file.filename:
+        return jsonify({'error': 'Empty audio file'}), 400
+
+    import tempfile
+    ext = os.path.splitext(audio_file.filename)[1] or '.webm'
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        tmp_path = tmp.name
+        audio_file.save(tmp_path)
+
+    try:
+        result = whisper_service.transcribe(tmp_path)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
 @app.route('/api/calendar/ai-sync', methods=['POST'])
 def calendar_ai_sync():
     profile = get_user_profile()
@@ -898,6 +1418,49 @@ def calendar_events():
         return jsonify({"error": str(exc)}), 500
 
 
+@app.route('/api/calendar/events/delete-batch', methods=['POST'])
+def calendar_delete_batch():
+    payload = request.get_json(silent=True) or {}
+    event_ids = list(dict.fromkeys(str(value).strip() for value in (payload.get('event_ids') or []) if str(value).strip()))[:20]
+    if not event_ids:
+        return jsonify({'error': 'event_ids is required'}), 400
+    profile = get_user_profile() or {}
+    deleted = []
+    failed = []
+    for event_id in event_ids:
+        try:
+            result = calendar_delete_event(event_id)
+            marker = str((result or {}).get('marker') or '').strip()
+            if marker:
+                _remember_calendar_dismissal(profile, marker)
+                result['dismissed_marker'] = marker
+            deleted.append(result)
+        except Exception as exc:
+            failed.append({'id': event_id, 'error': str(exc)})
+    system_context_service.increment_version()
+    return jsonify({
+        'ok': not failed,
+        'deleted': deleted,
+        'deleted_count': len(deleted),
+        'failed': failed,
+        'failed_count': len(failed),
+    }), 200 if deleted else 500
+
+
+@app.route('/api/calendar/deadlines/dismiss', methods=['POST'])
+def dismiss_calendar_deadline():
+    payload = request.get_json(silent=True) or {}
+    marker = str(payload.get('marker') or '').strip()
+    if not marker:
+        return jsonify({'error': 'marker is required'}), 400
+    profile = get_user_profile()
+    if not profile:
+        return jsonify({'error': 'Not authenticated'}), 401
+    _remember_calendar_dismissal(profile, marker)
+    system_context_service.increment_version()
+    return jsonify({'ok': True, 'dismissed_marker': marker})
+
+
 @app.route('/api/calendar/events/<event_id>', methods=['PATCH', 'DELETE'])
 def calendar_event_detail(event_id):
     try:
@@ -908,6 +1471,7 @@ def calendar_event_detail(event_id):
                 profile = get_user_profile() or {}
                 _remember_calendar_dismissal(profile, marker)
                 result['dismissed_marker'] = marker
+            system_context_service.increment_version()
             return jsonify(result)
         payload = request.get_json(silent=True) or {}
         return jsonify(calendar_update_event(event_id, payload))
@@ -1024,10 +1588,10 @@ def _event_brief_item(event):
     try:
         if 'T' in start:
             dt = datetime.fromisoformat(start.replace('Z', '+00:00')).astimezone(APP_TZ)
-            label = dt.strftime('%a %d %b · %-I:%M %p') if os.name != 'nt' else dt.strftime('%a %d %b · %#I:%M %p')
+            label = dt.strftime('%a %d %b Â· %-I:%M %p') if os.name != 'nt' else dt.strftime('%a %d %b Â· %#I:%M %p')
         elif start:
             dt = datetime.fromisoformat(start[:10])
-            label = dt.strftime('%a %d %b · all day')
+            label = dt.strftime('%a %d %b Â· all day')
     except Exception:
         pass
     return {
@@ -1171,17 +1735,9 @@ def _kyle_fast_path(message, context, selected_event_id=None):
 
     # Selected-event mutations.
     if selected_event_id and re.search(r'\b(delete|remove|cancel)\b', lower):
-        delete_result = calendar_delete_event(selected_event_id)
-        marker = str((delete_result or {}).get('marker') or '').strip()
-        if marker:
-            try:
-                _remember_calendar_dismissal(get_user_profile() or {}, marker)
-            except Exception as dismissal_exc:
-                app.logger.warning('Could not persist AI deadline dismissal: %s', dismissal_exc)
         return {
-            "reply": "Deleted the selected Google Calendar event.",
-            "voice": "Done. I deleted it.",
-            "command": {"type": "calendar_refresh"},
+            "reply": "Please review and confirm the selected event in the Kyle action window before deleting it.",
+            "voice": "I need your confirmation before deleting that event.",
             "handled": True,
         }
 
@@ -1393,6 +1949,19 @@ def _sanitize_agent_action(action, known):
     if tool == 'ui.toast':
         message = _agent_text(args.get('message'), 180)
         return {'tool': tool, 'args': {'message': message}} if message else None
+    if tool == 'calendar.refresh':
+        return {'tool': tool, 'args': {}}
+    if tool == 'calendar.delete_prepare':
+        requested = args.get('references') or [args.get('reference') or args]
+        references = []
+        for item in requested[:20]:
+            reference = _agent_reference(item)
+            if not reference or reference.get('type') != 'calendar-event':
+                continue
+            exact = known.get(f"calendar-event:{reference['id']}")
+            if exact and exact not in references:
+                references.append(exact)
+        return {'tool': tool, 'args': {'references': references}} if references else None
     if tool == 'calendar.preview_create':
         payload = args.get('payload') or {}
         title = _agent_text(payload.get('title'), 160)
@@ -1407,11 +1976,50 @@ def _sanitize_agent_action(action, known):
             'description': _agent_text(payload.get('description'), 600),
         }}}
 
+    if tool == 'mail.compose':
+        return {
+            'tool': tool,
+            'args': {
+                'recipient': _agent_text(args.get('recipient'), 160),
+                'to': _agent_text(args.get('to'), 160),
+                'subject': _agent_text(args.get('subject') or 'No Subject', 200),
+                'body': _agent_text(args.get('body'), 5000),
+            }
+        }
+    if tool == 'mail.reply':
+        return {
+            'tool': tool,
+            'args': {
+                'recipient': _agent_text(args.get('recipient'), 160),
+                'to': _agent_text(args.get('to'), 160),
+                'subject': _agent_text(args.get('subject') or 'Re: Update', 200),
+                'body': _agent_text(args.get('body'), 5000),
+                'thread_id': _agent_text(args.get('thread_id'), 120),
+                'in_reply_to': _agent_text(args.get('in_reply_to'), 120),
+            }
+        }
+    if tool == 'mail.update_draft':
+        return {
+            'tool': tool,
+            'args': {
+                'subject': _agent_text(args.get('subject'), 200) if args.get('subject') else None,
+                'body': _agent_text(args.get('body'), 5000),
+            }
+        }
+    if tool == 'mail.send_draft':
+        return {'tool': tool, 'args': {}}
+    if tool == 'mail.close_composer':
+        return {'tool': tool, 'args': {}}
+
     expected = {
         'inbox.open_email': 'email',
         'calendar.open_event': 'calendar-event',
+        'calendar.inspect_event': 'calendar-event',
         'calendar.preview_move': 'calendar-event',
         'work.focus': 'work-item',
+        'automation.run_now': 'automation',
+        'automation.enable': 'automation',
+        'automation.disable': 'automation',
         'ui.highlight': None,
         'ui.scroll_to': None,
         'ui.annotate': None,
@@ -1461,6 +2069,13 @@ def _infer_agent_actions(message, resolved, context=None):
         if not any(action.get('args', {}).get('page') == 'inbox' for action in actions):
             actions.append({'tool': 'navigation.open', 'args': {'page': 'inbox'}})
         actions.append({'tool': 'inbox.set_filter', 'args': {'filter': filter_name}})
+
+    calendar_references = [item for item in resolved if item.get('type') == 'calendar-event']
+    if calendar_references and re.search(r'\b(delete|remove|cancel)\b', lower):
+        if not any(action.get('args', {}).get('page') == 'calendar' for action in actions):
+            actions.append({'tool': 'navigation.open', 'args': {'page': 'calendar'}})
+        actions.append({'tool': 'calendar.delete_prepare', 'args': {'references': calendar_references[:20]}})
+        return actions
 
     put_on_calendar = bool(re.search(r'\b(put|add|save|schedule)\b.*\b(calendar|schedule)\b', lower))
     if reference and reference['type'] == 'email' and put_on_calendar:
@@ -1517,6 +2132,13 @@ def _infer_agent_actions(message, resolved, context=None):
             actions.append({'tool': 'calendar.open_event', 'args': {'reference': reference}})
     elif reference and reference['type'] == 'work-item' and re.search(r'\b(open|show|do|work|focus)\b', lower):
         actions.append({'tool': 'work.focus', 'args': {'reference': reference}})
+    elif reference and reference['type'] == 'automation':
+        if re.search(r'\b(run|start|do)\b', lower):
+            actions.append({'tool': 'automation.run_now', 'args': {'reference': reference}})
+        elif re.search(r'\b(enable|turn on)\b', lower):
+            actions.append({'tool': 'automation.enable', 'args': {'reference': reference}})
+        elif re.search(r'\b(disable|turn off|pause)\b', lower):
+            actions.append({'tool': 'automation.disable', 'args': {'reference': reference}})
 
     if reference and re.search(r'\b(where|which|highlight|point)\b', lower):
         actions.extend([
@@ -1524,6 +2146,239 @@ def _infer_agent_actions(message, resolved, context=None):
             {'tool': 'ui.highlight', 'args': {'reference': reference}},
         ])
     return actions
+
+
+def _find_contacts_by_name(query, emails):
+    query_clean = str(query or '').strip().lower()
+    if not query_clean:
+        return []
+    contacts = {}
+    for email in emails or []:
+        sender = email.get('sender') or ''
+        name, addr = parseaddr(sender)
+        if not addr:
+            continue
+        key = addr.lower()
+        if key not in contacts:
+            contacts[key] = {
+                'name': name or addr.split('@')[0],
+                'email': addr,
+                'full': sender
+            }
+    matched = []
+    for key, c in contacts.items():
+        if query_clean in c['name'].lower() or query_clean in c['email'].lower():
+            matched.append(c)
+    return matched
+
+
+def _explicit_email_address(text):
+    match = re.search(r'(?<![\w.+-])([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63})(?![\w.-])', str(text or ''), re.I)
+    return match.group(1).lower() if match else ''
+
+
+def _email_display_name(address):
+    local = str(address or '').split('@', 1)[0]
+    words = [word for word in re.split(r'[._+-]+', local) if word]
+    return ' '.join(word.capitalize() for word in words) or address
+
+
+def _handle_mail_intent(message, active_draft, selected_email, context_emails, user_profile):
+    lower = message.lower().strip()
+    user_name = user_profile.get('name') or 'Priyam'
+
+    # Case 1: Active draft editing or sending in contextual composer
+    if active_draft and active_draft.get('body'):
+        if re.search(r'\b(send\s*(?:it|draft|email|now)?|looks\s+good,?\s+send)\b', lower):
+            return {
+                'reply': 'Sending the email now.',
+                'actions': [{'tool': 'mail.send_draft', 'args': {}}],
+                'mode': 'mail_composer'
+            }
+
+        if re.search(r'\b(cancel|close|dismiss|nevermind|discard)\b', lower):
+            return {
+                'reply': 'I closed the draft.',
+                'actions': [{'tool': 'mail.close_composer', 'args': {}}],
+                'mode': 'composer_closed'
+            }
+
+        edit_words = {'short', 'shorter', 'brief', 'briefer', 'concise', 'long', 'longer', 'casual',
+                      'informal', 'formal', 'professional', 'friendly', 'polite', 'tone', 'change',
+                      'edit', 'rewrite', 'modify', 'add', 'remove', 'replace', 'fix', 'tonight', 'tomorrow'}
+        if any(w in lower for w in edit_words) or (len(lower.split()) <= 15 and not re.search(r'\b(open|show|go to|calendar|inbox|work)\b', lower)):
+            current_sub = active_draft.get('subject') or ''
+            current_body = active_draft.get('body') or ''
+            prompt = (
+                f"You are Kyle, editing an email draft for {user_name}.\n"
+                f"User instruction: {message}\n"
+                f"Current Subject: {current_sub}\n"
+                f"Current Body:\n{current_body}\n\n"
+                f"Return ONLY the revised email body text. Keep the greeting and sign-off consistent."
+            )
+            revised_body = chat_with_kyle(prompt).strip()
+            return {
+                'reply': "I've updated the draft for you.",
+                'actions': [{
+                    'tool': 'mail.update_draft',
+                    'args': {'body': revised_body}
+                }],
+                'mode': 'mail_composer'
+            }
+
+    # Case 2: Reply intent
+    # Matches: "reply to Rupayan saying I'll send it tonight", "reply saying ...", "reply to this"
+    if re.search(r'\breply\b', lower):
+        target_name = None
+        explicit_address = _explicit_email_address(message)
+        name_match = re.search(r'\breply\s+to\s+([A-Za-z]+)\b', lower)
+        if name_match and name_match.group(1).lower() not in {'this', 'that', 'the', 'it', 'me'}:
+            target_name = name_match.group(1)
+
+        target_contact = None
+        thread_id = None
+        in_reply_to = None
+        thread_subject = 'Update'
+
+        if explicit_address:
+            contacts = _find_contacts_by_name(explicit_address, context_emails)
+            target_contact = contacts[0] if contacts else {
+                'name': _email_display_name(explicit_address),
+                'email': explicit_address,
+                'full': explicit_address,
+            }
+        elif target_name:
+            contacts = _find_contacts_by_name(target_name, context_emails)
+            if len(contacts) > 1:
+                options_str = ", ".join([f"{c['name']} ({c['email']})" for c in contacts])
+                return {
+                    'reply': f"Which {target_name.capitalize()}? I found: {options_str}",
+                    'actions': [],
+                    'mode': 'contact_disambiguation',
+                    'contacts': contacts
+                }
+            elif len(contacts) == 1:
+                target_contact = contacts[0]
+                matching_email = next((e for e in context_emails if target_contact['email'] in (e.get('sender') or '').lower()), None)
+                if matching_email:
+                    thread_id = matching_email.get('threadId') or matching_email.get('thread_id') or matching_email.get('id')
+                    in_reply_to = matching_email.get('rfc_message_id') or None
+                    thread_subject = matching_email.get('subject') or thread_subject
+            else:
+                return {
+                    'reply': f"What's {target_name.capitalize()}'s email address?",
+                    'actions': [],
+                    'mode': 'recipient_required',
+                }
+        elif selected_email:
+            s_name, s_addr = parseaddr(selected_email.get('sender') or '')
+            target_contact = {'name': s_name or 'Sender', 'email': s_addr, 'full': selected_email.get('sender') or ''}
+            thread_id = selected_email.get('threadId') or selected_email.get('thread_id') or selected_email.get('id')
+            in_reply_to = selected_email.get('rfc_message_id') or None
+            thread_subject = selected_email.get('subject') or thread_subject
+
+        if target_contact:
+            saying_m = re.search(r'\b(?:saying|that|to\s+say)\s+(.*)$', message, re.I)
+            user_saying = saying_m.group(1).strip() if saying_m else message
+
+            clean_sub = f"Re: {thread_subject}" if not thread_subject.lower().startswith('re:') else thread_subject
+            recipient_display = target_contact['name']
+            first_name = recipient_display.split()[0] if recipient_display else 'there'
+
+            prompt = (
+                f"You are Kyle, an AI assistant drafting a polite email reply from {user_name}.\n"
+                f"Recipient: {recipient_display} <{target_contact['email']}>\n"
+                f"Subject: {clean_sub}\n"
+                f"Instruction: {user_saying}\n\n"
+                f"Draft a concise, natural reply email. Include greeting ('Hi {first_name},'), the concise response message, and sign-off ('Regards,\n{user_name}').\n"
+                f"Return ONLY the email body text."
+            )
+            body = chat_with_kyle(prompt).strip()
+
+            return {
+                'reply': f"I prepared a reply to {first_name}. You can review it above, make edits, or click Send.",
+                'actions': [{
+                    'tool': 'mail.reply',
+                    'args': {
+                        'recipient': target_contact.get('full') or recipient_display,
+                        'to': target_contact['email'],
+                        'subject': clean_sub,
+                        'body': body,
+                        'thread_id': thread_id,
+                        'in_reply_to': in_reply_to
+                    }
+                }],
+                'mode': 'mail_composer'
+            }
+
+    # Case 3: Compose new email intent
+    # Matches: "Email Aarush and ask if he finished the report", "write an email to Aarush asking..."
+    explicit_address = _explicit_email_address(message)
+    compose_match = re.search(r'\b(?:email|write\s+(?:an?\s+)?email\s+to|compose\s+(?:an?\s+)?email\s+to|send\s+(?:an?\s+)?email\s+to)\s+([A-Za-z]+)\b', lower)
+    if compose_match:
+        target_name = compose_match.group(1)
+        if target_name.lower() not in {'this', 'that', 'the', 'it', 'me'}:
+            contacts = _find_contacts_by_name(explicit_address or target_name, context_emails)
+            if len(contacts) > 1:
+                options_str = ", ".join([f"{c['name']} ({c['email']})" for c in contacts])
+                return {
+                    'reply': f"Which {target_name.capitalize()}? I found: {options_str}",
+                    'actions': [],
+                    'mode': 'contact_disambiguation',
+                    'contacts': contacts
+                }
+            if contacts:
+                target_contact = contacts[0]
+            elif explicit_address:
+                target_contact = {
+                    'name': _email_display_name(explicit_address),
+                    'email': explicit_address,
+                    'full': explicit_address,
+                }
+            else:
+                return {
+                    'reply': f"What's {target_name.capitalize()}'s email address?",
+                    'actions': [],
+                    'mode': 'recipient_required',
+                }
+
+            intent_m = re.search(r'\b(?:and\s+ask|asking|about|saying|that)\s+(.*)$', message, re.I)
+            user_intent = intent_m.group(1).strip() if intent_m else message
+
+            first_name = target_contact['name'].split()[0]
+            prompt = (
+                f"You are Kyle, an AI assistant composing a new email from {user_name}.\n"
+                f"Recipient: {target_contact['name']} <{target_contact['email']}>\n"
+                f"User instruction: {user_intent}\n\n"
+                f"Return JSON with 'subject' (concise 3-6 words) and 'body' (greeting, concise message, sign-off 'Best,\n{user_name}').\n"
+                f"Format: {{\"subject\": \"...\", \"body\": \"...\"}}"
+            )
+            raw = chat_with_kyle(prompt).strip()
+            subject = 'Update'
+            body = f"Hi {first_name},\n\n{user_intent}\n\nBest,\n{user_name}"
+            try:
+                clean_json = re.sub(r'^```json\s*|\s*```$', '', raw, flags=re.MULTILINE).strip()
+                parsed = json.loads(clean_json)
+                subject = parsed.get('subject') or subject
+                body = parsed.get('body') or body
+            except Exception:
+                pass
+
+            return {
+                'reply': f"I prepared a draft for {first_name}. Review it above, edit if needed, and send whenever you're ready.",
+                'actions': [{
+                    'tool': 'mail.compose',
+                    'args': {
+                        'recipient': target_contact.get('full') or target_contact['name'],
+                        'to': target_contact['email'],
+                        'subject': subject,
+                        'body': body
+                    }
+                }],
+                'mode': 'mail_composer'
+            }
+
+    return None
 
 
 @app.route('/api/kyle/agent', methods=['POST'])
@@ -1541,7 +2396,46 @@ def kyle_agent_endpoint():
     resolved = [
         item for item in (_agent_reference(ref) for ref in (data.get('resolvedReferences') or [])[:4]) if item
     ]
+    selected_calendar_id = _agent_text(data.get('selectedCalendarEventId'), 160)
+    if selected_calendar_id and not any(item.get('type') == 'calendar-event' and item.get('id') == selected_calendar_id for item in resolved):
+        browser_events = ((data.get('context') or {}).get('calendarEvents') or []) if isinstance(data.get('context'), dict) else []
+        selected_event = next((event for event in browser_events if str(event.get('id')) == selected_calendar_id), None)
+        resolved.append({
+            'type': 'calendar-event',
+            'id': selected_calendar_id,
+            'label': _agent_text((selected_event or {}).get('title') or 'Selected calendar event', 180),
+        })
     known = _agent_known_references(ui_context, resolved)
+
+    active_draft = data.get('activeDraft')
+    selected_email = data.get('selectedEmail')
+
+    # Merge browser context with authoritative system_ctx
+    merged_context = dict(system_ctx)
+    if isinstance(data.get('context'), dict):
+        for k, v in data['context'].items():
+            if k not in merged_context:
+                merged_context[k] = v
+
+    # 1. Contextual Email Composer & Intent Handling
+    mail_intent_res = _handle_mail_intent(
+        message=message,
+        active_draft=active_draft,
+        selected_email=selected_email,
+        context_emails=merged_context.get('emails') or [],
+        user_profile=profile
+    )
+    if mail_intent_res:
+        reply = mail_intent_res.get('reply') or ''
+        return jsonify({
+            'reply': reply,
+            'text': reply,
+            'voice': _compact_voice(reply),
+            'actions': mail_intent_res.get('actions') or [],
+            'mode': mail_intent_res.get('mode', 'mail_composer'),
+            'contacts': mail_intent_res.get('contacts'),
+            'context_version': system_ctx.get('context_version', 1),
+        })
 
     if re.search(r'\b(this|that|it|this one|that one|these|those)\b', message, re.I) and not resolved:
         return jsonify({
@@ -1552,12 +2446,6 @@ def kyle_agent_endpoint():
         })
 
     actions = []
-    # Merge browser context with authoritative system_ctx
-    merged_context = dict(system_ctx)
-    if isinstance(data.get('context'), dict):
-        for k, v in data['context'].items():
-            if k not in merged_context:
-                merged_context[k] = v
 
     for candidate in _infer_agent_actions(message, resolved, context=merged_context):
         sanitized = _sanitize_agent_action(candidate, known)
@@ -1586,7 +2474,7 @@ def kyle_agent_endpoint():
         'reply': reply,
         'text': reply,
         'voice': _compact_voice(reply),
-        'actions': actions[:5],
+        'actions': actions[:24],
         'mode': 'deterministic-context',
         'context_version': system_ctx.get('context_version', 1),
     })
@@ -1644,4 +2532,6 @@ if __name__ == '__main__':
     print(f"Flask server running on http://localhost:{port}")
     print(f"[Static] project root: {BASE_DIR}")
     print(f"[Static] styles.css: {(BASE_DIR / 'styles.css').is_file()}")
-    app.run(port=port, host='0.0.0.0', debug=True, use_reloader=False)
+    app.run(port=port, host='0.0.0.0', debug=False, threaded=True)
+
+

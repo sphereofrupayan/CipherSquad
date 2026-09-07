@@ -1,3 +1,5 @@
+import threading
+import time
 import os
 import json
 import base64
@@ -160,11 +162,32 @@ def handle_callback(url, state=None, code_verifier=None):
     return creds
 
 
+_THREAD_LOCAL = threading.local()
+
+
+def _reset_gmail_service():
+    """Reset the thread-local Gmail client if a network, timeout, or SSL error occurs."""
+    _THREAD_LOCAL.gmail_service = None
+    _THREAD_LOCAL.gmail_token = None
+
+
 def _gmail_service():
     creds = get_credentials()
     if not creds:
+        _reset_gmail_service()
         return None
-    return build('gmail', 'v1', credentials=creds, cache_discovery=False)
+
+    current_token = getattr(creds, 'token', None)
+    cached_service = getattr(_THREAD_LOCAL, 'gmail_service', None)
+    cached_token = getattr(_THREAD_LOCAL, 'gmail_token', None)
+
+    if cached_service and current_token and current_token == cached_token and getattr(creds, 'valid', True):
+        return cached_service
+
+    service = build('gmail', 'v1', credentials=creds, cache_discovery=False)
+    _THREAD_LOCAL.gmail_service = service
+    _THREAD_LOCAL.gmail_token = current_token
+    return service
 
 
 def get_user_profile():
@@ -279,9 +302,75 @@ class _ReadableHtmlParser(HTMLParser):
         elif not self._ignored_depth and tag in self._BLOCK_TAGS:
             self.parts.append('\n')
 
+    def handle_comment(self, data):
+        # Suppress all HTML comments, including MSO/Outlook conditional
+        # comments like <!--[if !mso]-->, <!--[if false]-->, <!-->.
+        pass
+
     def handle_data(self, data):
         if not self._ignored_depth:
             self.parts.append(data)
+
+
+class _SafeEmailHtmlParser(HTMLParser):
+    """Keep presentation markup while removing executable or unsafe HTML."""
+
+    _TAGS = {
+        'a', 'b', 'blockquote', 'br', 'code', 'div', 'em', 'h1', 'h2', 'h3',
+        'h4', 'h5', 'h6', 'i', 'img', 'li', 'ol', 'p', 'pre', 'span', 'strong',
+        'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul'
+    }
+    _VOID_TAGS = {'br', 'img'}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self._ignored_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in {'script', 'style', 'noscript', 'iframe', 'object', 'embed'}:
+            self._ignored_depth += 1
+            return
+        if self._ignored_depth or tag not in self._TAGS:
+            return
+
+        safe_attrs = []
+        for name, value in attrs:
+            name = name.lower()
+            value = str(value or '')
+            if name == 'href' and re.match(r'^(https?|mailto):', value, re.I):
+                safe_attrs.append(('href', value))
+            elif name == 'src' and re.match(r'^(https?:|data:image/)', value, re.I):
+                safe_attrs.append(('src', value))
+            elif name in {
+                'alt', 'title', 'width', 'height', 'colspan', 'rowspan',
+                'align', 'valign', 'border', 'cellpadding', 'cellspacing',
+                'bgcolor', 'role'
+            }:
+                safe_attrs.append((name, value))
+            elif name == 'style':
+                style = re.sub(r'(?i)(javascript|expression|behavior|url\s*\(|@import)', '', value)
+                safe_attrs.append(('style', style))
+        rendered_attrs = ''.join(f' {name}="{html.escape(value, quote=True)}"' for name, value in safe_attrs)
+        self.parts.append(f'<{tag}{rendered_attrs}>')
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in {'script', 'style', 'noscript', 'iframe', 'object', 'embed'} and self._ignored_depth:
+            self._ignored_depth -= 1
+        elif not self._ignored_depth and tag in self._TAGS and tag not in self._VOID_TAGS:
+            self.parts.append(f'</{tag}>')
+
+    def handle_data(self, data):
+        if not self._ignored_depth:
+            self.parts.append(html.escape(data))
+
+    def handle_comment(self, data):
+        pass
 
 
 def _decode_gmail_body(data):
@@ -324,16 +413,40 @@ def _clean_message_text(value):
     return value.strip()
 
 
+def _strip_mso_conditionals(html_text):
+    """Remove Outlook/Word MSO conditional comment blocks that leak raw comment
+    markers (<!--[if !mso]-->, <!--[if false]-->, <!--[endif]-->, etc.) into
+    the extracted plain text."""
+    # Remove full conditional blocks: <!--[if ...]>...</[endif]-->
+    html_text = re.sub(r'<!--\[if[^\]]*\]>.*?<!\[endif\]-->', '', html_text, flags=re.DOTALL | re.IGNORECASE)
+    # Remove standalone MSO markers that do not wrap a block
+    html_text = re.sub(r'<!--\[if[^>]*>.*?-->', '', html_text, flags=re.DOTALL | re.IGNORECASE)
+    # Remove bare close-comment shorthand used by Google mail (<!-->)
+    html_text = re.sub(r'<!-->', '', html_text)
+    return html_text
+
+
 def _readable_message_body(payload, fallback=''):
     plain, rich = _message_body_parts(payload)
     if plain:
         return _clean_message_text('\n\n'.join(part for part in plain if part.strip()))
     if rich:
+        clean_html = _strip_mso_conditionals('\n'.join(rich))
         parser = _ReadableHtmlParser()
-        parser.feed('\n'.join(rich))
+        parser.feed(clean_html)
         parser.close()
         return _clean_message_text(''.join(parser.parts))
     return _clean_message_text(fallback)
+
+
+def _safe_message_html(payload):
+    _, rich = _message_body_parts(payload)
+    if not rich:
+        return ''
+    parser = _SafeEmailHtmlParser()
+    parser.feed(_strip_mso_conditionals('\n'.join(rich)))
+    parser.close()
+    return ''.join(parser.parts).strip()
 
 
 def get_gmail_message(message_id):
@@ -358,10 +471,12 @@ def get_gmail_message(message_id):
         'to': _address_list(headers.get('To', '')),
         'cc': _address_list(headers.get('Cc', '')),
         'subject': headers.get('Subject') or 'No Subject',
+        'rfc_message_id': headers.get('Message-ID') or headers.get('Message-Id') or '',
         'date': headers.get('Date', ''),
         'timestamp': headers.get('Date', ''),
         'snippet': message.get('snippet') or '',
         'body': _readable_message_body(payload, message.get('snippet') or ''),
+        'body_html': _safe_message_html(payload),
         'is_read': 'UNREAD' not in labels,
         'is_starred': 'STARRED' in labels,
         'labels': labels,
@@ -442,7 +557,17 @@ def get_gmail_threads():
     if not service:
         return [], []
 
-    profile = service.users().getProfile(userId='me').execute()
+    try:
+        profile = service.users().getProfile(userId='me').execute()
+    except Exception as exc:
+        _reset_gmail_service()
+        service = _gmail_service()
+        if not service:
+            return [], []
+        try:
+            profile = service.users().getProfile(userId='me').execute()
+        except Exception:
+            return [], []
     my_email = str(profile.get('emailAddress') or '').strip().lower()
     limit = max(1, min(int(os.getenv('GMAIL_FETCH_LIMIT', '20') or 20), 50))
     query = _gmail_query()
@@ -489,6 +614,7 @@ def get_gmail_threads():
                 'to': _address_list(headers.get('To', '')),
                 'cc': _address_list(headers.get('Cc', '')),
                 'subject': subject,
+                'rfc_message_id': headers.get('Message-ID') or headers.get('Message-Id') or '',
                 'date': date,
                 'timestamp': date,
                 'snippet': snippet,
@@ -516,10 +642,9 @@ def get_gmail_threads():
 def create_gmail_draft(to, subject, body, thread_id=None, in_reply_to=None):
     """Create an actual Gmail draft tied to a thread so it appears in Gmail and can be reviewed."""
     from email.message import EmailMessage
-    creds = get_credentials()
-    if not creds:
+    service = _gmail_service()
+    if not service:
         raise RuntimeError("Google account not connected")
-    service = build('gmail', 'v1', credentials=creds)
 
     msg = EmailMessage()
     msg.set_content(body or '')
@@ -554,10 +679,9 @@ def create_gmail_draft(to, subject, body, thread_id=None, in_reply_to=None):
 def update_gmail_draft(draft_id, to, subject, body, thread_id=None, in_reply_to=None):
     """Update an existing Gmail draft with new or edited content before sending."""
     from email.message import EmailMessage
-    creds = get_credentials()
-    if not creds:
+    service = _gmail_service()
+    if not service:
         raise RuntimeError("Google account not connected")
-    service = build('gmail', 'v1', credentials=creds)
 
     msg = EmailMessage()
     msg.set_content(body or '')
@@ -592,10 +716,9 @@ def update_gmail_draft(draft_id, to, subject, body, thread_id=None, in_reply_to=
 
 def send_gmail_draft(draft_id):
     """Send an exact existing draft after explicit human approval."""
-    creds = get_credentials()
-    if not creds:
+    service = _gmail_service()
+    if not service:
         raise RuntimeError("Google account not connected")
-    service = build('gmail', 'v1', credentials=creds)
     try:
         sent = service.users().drafts().send(userId='me', body={'id': draft_id}).execute()
         return {
@@ -606,7 +729,64 @@ def send_gmail_draft(draft_id):
     except HttpError as err:
         if err.resp.status == 403 or 'insufficient' in str(err).lower():
             raise GmailInsufficientPermissionError()
-        raise err
+        raise
+
+
+def send_gmail_direct(to, subject, body, thread_id=None, in_reply_to=None, message_id_header=None):
+    """Send an exact email message directly via Gmail API users.messages.send."""
+    from email.message import EmailMessage
+
+    msg = EmailMessage()
+    msg.set_content(body or '')
+    msg['To'] = to or ''
+    msg['Subject'] = subject or 'No Subject'
+    if message_id_header:
+        msg['Message-ID'] = message_id_header
+    if in_reply_to:
+        msg['In-Reply-To'] = in_reply_to
+        msg['References'] = in_reply_to
+
+    encoded_message = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
+    body_payload = {
+        'raw': encoded_message
+    }
+    if thread_id:
+        body_payload['threadId'] = thread_id
+
+    service = _gmail_service()
+    if not service:
+        raise RuntimeError("Google account not connected")
+    try:
+        sent = service.users().messages().send(userId='me', body=body_payload).execute()
+        return {
+            'id': sent.get('id'),
+            'thread_id': sent.get('threadId'),
+            'labels': sent.get('labelIds', [])
+        }
+    except HttpError as err:
+        if err.resp.status == 403 or 'insufficient' in str(err).lower():
+            raise GmailInsufficientPermissionError()
+        raise
+
+
+def find_sent_message_by_rfc_id(message_id_header):
+    """Reconcile an ambiguous send without issuing another send request."""
+    value = str(message_id_header or '').strip()
+    if not value:
+        return None
+    service = _gmail_service()
+    if not service:
+        return None
+    result = service.users().messages().list(
+        userId='me',
+        q=f'in:sent rfc822msgid:{value}',
+        maxResults=1,
+    ).execute()
+    matches = result.get('messages') or []
+    if not matches:
+        return None
+    message = matches[0]
+    return {'id': message.get('id'), 'thread_id': message.get('threadId')}
 
 
 def get_gmail_thread(thread_id):
@@ -654,6 +834,7 @@ def get_gmail_thread(thread_id):
             'from': {'name': sender_name, 'email': sender_email},
             'to': _address_list(headers.get('To', '')),
             'subject': subject,
+            'rfc_message_id': headers.get('Message-ID') or headers.get('Message-Id') or '',
             'date': date,
             'internal_date': internal_date,
             'timestamp': date,
@@ -673,11 +854,12 @@ def get_gmail_thread(thread_id):
 
 def get_gmail_draft(draft_id):
     """Fetch an existing Gmail draft by ID. Returns None if it no longer exists."""
-    creds = get_credentials()
-    if not creds or not draft_id:
+    if not draft_id:
+        return None
+    service = _gmail_service()
+    if not service:
         return None
     try:
-        service = build('gmail', 'v1', credentials=creds)
         draft = service.users().drafts().get(userId='me', id=draft_id).execute()
         return draft
     except HttpError as err:
@@ -686,6 +868,7 @@ def get_gmail_draft(draft_id):
         print(f"[Gmail] get_gmail_draft error ({draft_id}): {err}")
         return None
     except Exception as e:
+        _reset_gmail_service()
         print(f"[Gmail] get_gmail_draft error ({draft_id}): {e}")
         return None
 
@@ -695,11 +878,12 @@ def delete_gmail_draft(draft_id):
     Safely delete an exact Mailmate-created Gmail draft.
     Does nothing if draft does not exist or account is disconnected.
     """
-    creds = get_credentials()
-    if not creds or not draft_id:
+    if not draft_id:
+        return False
+    service = _gmail_service()
+    if not service:
         return False
     try:
-        service = build('gmail', 'v1', credentials=creds)
         service.users().drafts().delete(userId='me', id=draft_id).execute()
         return True
     except HttpError as err:
@@ -710,6 +894,7 @@ def delete_gmail_draft(draft_id):
         print(f"[Gmail] delete_gmail_draft error ({draft_id}): {err}")
         return False
     except Exception as e:
+        _reset_gmail_service()
         print(f"[Gmail] delete_gmail_draft error ({draft_id}): {e}")
         return False
 

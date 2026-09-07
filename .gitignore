@@ -26,4 +26,5 @@ __pycache__/
 workspaces/
 README_*.txt
 VERIFY_*.bat
-
+.mailmate-*-backup/
+mailmate_remote_worker_dropin/

@@ -3,10 +3,12 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
 import os
+import threading
 
 from services.google_service import get_user_profile
 from services.work_agent_service import work_agent_service
 from services.calendar_service import list_events as calendar_list_events
+from services.calendar_conflicts import calculate_conflicts
 
 _APP_TZ = timezone(timedelta(hours=5, minutes=30))  # Default fallback IST
 
@@ -82,52 +84,7 @@ class SystemContextService:
             raw_events = calendar_list_events(limit=100) or []
             self._freshness["calendar"] = now_iso
 
-            # Deduplicate & reset conflict state
-            seen_ids = set()
-            clean_events = []
-            for ev in raw_events:
-                eid = ev.get("id")
-                if eid and eid in seen_ids:
-                    continue
-                if eid:
-                    seen_ids.add(eid)
-                ev_copy = dict(ev)
-                ev_copy["conflict"] = False
-                ev_copy["conflict_with"] = []
-                clean_events.append(ev_copy)
-
-            # Conflict Detection: Only timed, non-all-day real events participate
-            timed_events = [
-                e for e in clean_events
-                if not e.get("all_day")
-                and e.get("source") != "deadline"
-                and e.get("start")
-                and e.get("end")
-            ]
-
-            for i in range(len(timed_events)):
-                for j in range(i + 1, len(timed_events)):
-                    a = timed_events[i]
-                    b = timed_events[j]
-                    try:
-                        start_a = a["start"]
-                        end_a = a["end"]
-                        start_b = b["start"]
-                        end_b = b["end"]
-                        # Overlap condition: start_a < end_b and start_b < end_a
-                        if start_a < end_b and start_b < end_a:
-                            a["conflict"] = True
-                            b["conflict"] = True
-                            a["conflict_with"].append({"id": b.get("id"), "title": b.get("title")})
-                            b["conflict_with"].append({"id": a.get("id"), "title": a.get("title")})
-                            conflict_pairs.append({
-                                "event_a": {"id": a.get("id"), "title": a.get("title"), "start": a.get("start")},
-                                "event_b": {"id": b.get("id"), "title": b.get("title"), "start": b.get("start")},
-                            })
-                    except Exception:
-                        pass
-
-            calendar_events = clean_events
+            calendar_events, conflict_pairs = calculate_conflicts(raw_events)
         except Exception as e:
             print(f"[SystemContext] Calendar fetch/conflict error: {e}")
 
